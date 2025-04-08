@@ -1,0 +1,1798 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "id": "dc7408ab",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import numpy as np \n",
+    "import qutip as qutip\n",
+    "import matplotlib.pyplot as plt"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "id": "562eb36b",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "class SpinSite:\n",
+    "    \"\"\"\n",
+    "    Base class for a lattice site with spin operators \n",
+    "    \"\"\"\n",
+    "    def __init__(self, position):\n",
+    "        self.position = position\n",
+    "        self.operators = {}\n",
+    "        \n",
+    "    def get_operator(self, op_type):\n",
+    "        return self.operators.get(op_type, None)\n",
+    "    \n",
+    "    def __repr__(self):\n",
+    "        return f\"{self.__class__.__name__}(position={self.position}, spin={self.spin_type})\"\n",
+    "\n",
+    "    \n",
+    "class SpinHalfSite(SpinSite):\n",
+    "    \"\"\"\n",
+    "    Class for a spin-1/2 site with Pauli operators\n",
+    "    \"\"\"\n",
+    "    def __init__(self, position):\n",
+    "        super().__init__(position)\n",
+    "        self.spin_type = 0.5  # Fixed assignment\n",
+    "        self.operators = {\n",
+    "            \"Sx\": qutip.sigmax(),\n",
+    "            \"Sy\": qutip.sigmay(),\n",
+    "            \"Sz\": qutip.sigmaz(),\n",
+    "            \"id2\": qutip.qeye(2)\n",
+    "        }\n",
+    "        \n",
+    "class SpinOneSite(SpinSite):\n",
+    "    \"\"\"\n",
+    "    Class for a spin-1 site with Pauli operators\n",
+    "    \"\"\"\n",
+    "    def __init__(self, position):\n",
+    "        super().__init__(position)\n",
+    "        self.spin_type = 1\n",
+    "        self.operators={\n",
+    "            \"Jx\":qutip.jmat(1)[0],\n",
+    "            \"Jy\":qutip.jmat(1)[1],\n",
+    "            \"Jz\":qutip.jmat(1)[2],\n",
+    "            \"id3\": qutip.qeye(3)\n",
+    "        }"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 129,
+   "id": "be6c12a4",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "class twodimensionalLattice:\n",
+    "    \n",
+    "    def __init__(self, site_map):\n",
+    "        \"\"\"\n",
+    "        site_map: dict with keys as (x, y) tuples and values as \"spin-1\" or \"spin-1/2\"\n",
+    "        \"\"\"\n",
+    "        self.sites = {}  # keys: (x, y), values: SpinSite objects\n",
+    "        self.positions = list(site_map.keys())\n",
+    "        self.populate_from_map(site_map)\n",
+    "\n",
+    "    def __repr__(self):\n",
+    "        lines = [\"twodimensionalLattice:\"]\n",
+    "        for pos, site in sorted(self.sites.items()):\n",
+    "            spin_type = f\"spin-{site.spin_type}\"\n",
+    "            lines.append(f\"  Position {pos}: {spin_type}\")\n",
+    "        return \"\\n\".join(lines)\n",
+    "    \n",
+    "    def add_site(self, position, site_obj):\n",
+    "        \"\"\"\n",
+    "        Add a SpinSite (SpinHalfSite or SpinOneSite) at a given position.\n",
+    "        \"\"\"\n",
+    "        if position in self.sites:\n",
+    "            raise ValueError(f\"Site at position {position} already exists.\")\n",
+    "        if not isinstance(site_obj, SpinSite):\n",
+    "            raise TypeError(\"site_obj must be an instance of SpinSite or subclass.\")\n",
+    "        self.sites[position] = site_obj\n",
+    "        \n",
+    "    def populate_from_map(self, site_map):\n",
+    "        for pos, s in site_map.items():\n",
+    "            if s == \"spin-1\": \n",
+    "                self.add_site(pos, SpinOneSite(pos))\n",
+    "            elif s == \"spin-1/2\":\n",
+    "                self.add_site(pos, SpinHalfSite(pos))\n",
+    "            else:\n",
+    "                raise ValueError(f\"Unknown spin type '{s}' at position {pos}.\")\n",
+    "    \n",
+    "    def get_site(self, position):\n",
+    "        \"\"\"\n",
+    "        Returns the SpinSite at a given position.\n",
+    "        Raises KeyError if not found.\n",
+    "        \"\"\"\n",
+    "        if position not in self.sites:\n",
+    "            raise KeyError(f\"No site found at position {position}.\")\n",
+    "        return self.sites[position]\n",
+    "    \n",
+    "    def get_local_spin_ops(self, position):\n",
+    "        \"\"\"\n",
+    "        Returns spin operators for a site at given position.\n",
+    "        \"\"\"\n",
+    "        site = self.get_site(position)\n",
+    "    \n",
+    "        return site.operators\n",
+    "\n",
+    "    def get_tensorized_local_spin_ops(self, position, site_map):\n",
+    "        if len(site_map) >= 12: \n",
+    "            raise KeyError(\"Tensorization not possible due to size of lattice.\")\n",
+    "        \n",
+    "        ordered_positions = list(site_map.keys())\n",
+    "        target_site = self.get_site(position)\n",
+    "        target_operators = target_site.operators\n",
+    "\n",
+    "        # Convert spin_type to dimension: dim = 2*S + 1\n",
+    "        dim_list = [int(2 * float(self.get_site(pos).spin_type) + 1) for pos in ordered_positions]\n",
+    "        local_ids = [qutip.qeye(dim) for dim in dim_list]\n",
+    "    \n",
+    "        pos_index = ordered_positions.index(position)\n",
+    "\n",
+    "        tensorized_ops = {}\n",
+    "        for opname, op in target_operators.items():\n",
+    "            op_list = local_ids.copy()\n",
+    "            op_list[pos_index] = op\n",
+    "            tensorized_ops[opname] = qutip.tensor(op_list)\n",
+    "    \n",
+    "        return tensorized_ops\n",
+    "    \n",
+    "    def get_neighbors(self, position, distance=1):\n",
+    "        \"\"\"\n",
+    "        Returns list of neighboring positions within a given Manhattan distance.\n",
+    "        \"\"\"\n",
+    "        x0, y0 = position\n",
+    "        neighbors = []\n",
+    "        for (x, y) in self.sites:\n",
+    "             if (x, y) != position and abs(x - x0) + abs(y - y0) <= distance:\n",
+    "                neighbors.append((x, y))\n",
+    "        return neighbors\n",
+    "\n",
+    "    def get_distance(self, pos1, pos2):\n",
+    "        x1,y1=pos1\n",
+    "        x2,y2=pos2\n",
+    "        return ((x1-x2)**2 + (y1-y2)**2)**0.5\n",
+    "    \n",
+    "    def plot_lattice(self):\n",
+    "        \"\"\"\n",
+    "        Visualizes the lattice in a 2D plot, coloring sites based on spin type.\n",
+    "        \"\"\"\n",
+    "        # Create figure and axis\n",
+    "        fig, ax = plt.subplots(figsize=(4, 4))\n",
+    "        \n",
+    "        # Lists to hold positions for the scatter plot\n",
+    "        spin1_positions = []\n",
+    "        spin_half_positions = []\n",
+    "        \n",
+    "        # Loop over the sites and separate them based on spin type\n",
+    "        for pos, site in self.sites.items():\n",
+    "            x, y = pos\n",
+    "            if site.spin_type == 1:\n",
+    "                spin1_positions.append((x, y))\n",
+    "            else:\n",
+    "                spin_half_positions.append((x, y))\n",
+    "        \n",
+    "        # Plot spin-1 sites in red\n",
+    "        spin1_positions = list(zip(*spin1_positions))\n",
+    "        if spin1_positions:\n",
+    "            ax.scatter(spin1_positions[0], spin1_positions[1], c='blue', label=\"spin-1\", s=100)\n",
+    "        \n",
+    "        # Plot spin-1/2 sites in blue\n",
+    "        spin_half_positions = list(zip(*spin_half_positions))\n",
+    "        if spin_half_positions:\n",
+    "            ax.scatter(spin_half_positions[0], spin_half_positions[1], c='red', label=\"spin-1/2\", s=100)\n",
+    "        \n",
+    "        # Set up the plot labels and grid\n",
+    "        ax.set_xlabel('X')\n",
+    "        ax.set_ylabel('Y')\n",
+    "        ax.set_title('2D Lattice Visualization')\n",
+    "        ax.grid(True)\n",
+    "        ax.set_aspect('equal')\n",
+    "        \n",
+    "        # Add a legend\n",
+    "        ax.legend()\n",
+    "\n",
+    "        # Show the plot\n",
+    "        plt.show()\n",
+    "        \n",
+    "    \n",
+    "class DipolarHamiltonianBuilder:\n",
+    "    def __init__(self, lattice, Jx=1.0, Jy=1.0, Jz=1.0, cutoff=None):\n",
+    "        self.lattice = lattice\n",
+    "        self.Jx = Jx\n",
+    "        self.Jy = Jy\n",
+    "        self.Jz = Jz\n",
+    "        self.cutoff = cutoff  # Optional: ignore interactions beyond this distance\n",
+    "\n",
+    "    def build_hamiltonian(self):\n",
+    "        H = 0\n",
+    "        positions = self.lattice.positions\n",
+    "        \n",
+    "        for i, pos1 in enumerate(positions):\n",
+    "            for pos2 in positions[i+1:]:\n",
+    "                dist = self.lattice.get_distance(pos1, pos2)\n",
+    "                if self.cutoff and dist > self.cutoff:\n",
+    "                    continue\n",
+    "                \n",
+    "                ops1 = self.lattice.get_tensorized_local_spin_ops(pos1, self.lattice.sites)\n",
+    "                ops2 = self.lattice.get_tensorized_local_spin_ops(pos2, self.lattice.sites)\n",
+    "                \n",
+    "                # Dipolar interaction ~ (1 - 3cos²θ)/r³ (simplified here)\n",
+    "                coeff = 1.0 / dist**3\n",
+    "                \n",
+    "                H += coeff * (\n",
+    "                    self.Jx * ops1[\"sx\"] * ops2[\"sx\"] +\n",
+    "                    self.Jy * ops1[\"sy\"] * ops2[\"sy\"] +\n",
+    "                    self.Jz * ops1[\"sz\"] * ops2[\"sz\"]\n",
+    "                )\n",
+    "        return H\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 130,
+   "id": "af290214",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "class OperatorBase:\n",
+    "    def __add__(self, other):\n",
+    "        if isinstance(other, SumOperator):\n",
+    "            return SumOperator([self] + other.terms, [1.0] + other.coeffs)\n",
+    "        elif isinstance(other, OperatorBase):\n",
+    "            return SumOperator([self, other])\n",
+    "        else:\n",
+    "            raise TypeError(\"Can only add OperatorBase types\")\n",
+    "\n",
+    "    def __radd__(self, other):\n",
+    "        return self.__add__(other)\n",
+    "\n",
+    "    def __sub__(self, other):\n",
+    "        return self + (-1.0 * other)\n",
+    "\n",
+    "    def __mul__(self, scalar):\n",
+    "        if isinstance(scalar, (int, float, complex)):\n",
+    "            return SumOperator([self], [scalar])\n",
+    "        else:\n",
+    "            raise TypeError(\"Only scalar * operator supported\")\n",
+    "\n",
+    "    def __rmul__(self, scalar):\n",
+    "        return self.__mul__(scalar)\n",
+    "    \n",
+    "    def __matmul__(self, other):\n",
+    "        if isinstance(other, OperatorBase):\n",
+    "            return self._matmul_operator(other)\n",
+    "        else:\n",
+    "            raise TypeError(\"Matrix multiplication only supported between operators\")\n",
+    "\n",
+    "    def _matmul_operator(self, other):\n",
+    "        return ProductOperator._from_matmul(self, other)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 131,
+   "id": "5692a6d1",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def tensor_with_sites(sites, local_ops):\n",
+    "    \"\"\"\n",
+    "    sites: list of SpinSite objects\n",
+    "    local_ops: dict {site.position: qobj}\n",
+    "    \"\"\"\n",
+    "    ops = []\n",
+    "    for site in sites:\n",
+    "        op = local_ops.get(site.position, qutip.qeye(site.get_operator(\"id2\").dims[0][0]))\n",
+    "        ops.append(op)\n",
+    "    return qutip.tensor(ops)\n",
+    "\n",
+    "def subterm_key(term):\n",
+    "    if isinstance(term, ProductOperator):\n",
+    "        return frozenset(term.op_map.items())\n",
+    "    elif isinstance(term, LocalOperator):\n",
+    "        return (term.site.position, term.op_type)\n",
+    "    else:\n",
+    "        return id(term)  # fallback: default identity\n",
+    "\n",
+    "class LocalOperator:\n",
+    "    def __init__(self, site, op_type, qobj=None):\n",
+    "        self.site = site\n",
+    "        self.op_type = op_type\n",
+    "        self._qobj = qobj  # Used if a custom operator is passed\n",
+    "\n",
+    "    def to_qobj(self):\n",
+    "        if self._qobj is not None:\n",
+    "            return self._qobj\n",
+    "        return self.site.get_operator(self.op_type)\n",
+    "\n",
+    "    def __repr__(self):\n",
+    "        return f\"LocalOperator({self.site.position}, '{self.op_type}')\"\n",
+    "\n",
+    "\n",
+    "class ProductOperator(OperatorBase):\n",
+    "    def __init__(self, op_map):\n",
+    "        self.op_map = dict(op_map)\n",
+    "\n",
+    "    def __mul__(self, other):\n",
+    "        if isinstance(other, (int, float, complex)):\n",
+    "            return SumOperator([self], [other])\n",
+    "\n",
+    "        elif isinstance(other, ProductOperator):\n",
+    "            new_op_map = dict(self.op_map)\n",
+    "            for site, op in other.op_map.items():\n",
+    "                if site in new_op_map:\n",
+    "                    combined = LocalOperator(\n",
+    "                        site,\n",
+    "                        \"custom\",\n",
+    "                        new_op_map[site].to_qobj() * op.to_qobj()\n",
+    "                    )\n",
+    "                    new_op_map[site] = combined\n",
+    "                else:\n",
+    "                    new_op_map[site] = op\n",
+    "            return ProductOperator(new_op_map)\n",
+    "\n",
+    "        elif isinstance(other, SumOperator):\n",
+    "            return SumOperator(\n",
+    "                [self * term for term in other.terms],\n",
+    "                other.coeffs.copy()\n",
+    "            )\n",
+    "\n",
+    "        else:\n",
+    "            return NotImplemented\n",
+    "\n",
+    "    def __rmul__(self, other):\n",
+    "        if isinstance(other, SumOperator):\n",
+    "            return other.__mul__(self)\n",
+    "        return self.__mul__(other)\n",
+    "\n",
+    "    def tensorized_to_qobj(self, all_sites):\n",
+    "        ops = []\n",
+    "        for site in all_sites:\n",
+    "            if site in self.op_map:\n",
+    "                ops.append(self.op_map[site].to_qobj())\n",
+    "            else:\n",
+    "                dim = site.get_operator(\"id2\" if site.spin_type == 0.5 else \"id3\").shape[0]\n",
+    "                ops.append(qutip.qeye(dim))\n",
+    "        return qutip.tensor(ops)\n",
+    "\n",
+    "    def __repr__(self):\n",
+    "        return \" * \".join([f\"{site.position}:{op.op_type}\" for site, op in self.op_map.items()])\n",
+    "\n",
+    "class SumOperator(OperatorBase):\n",
+    "    def __init__(self, terms, coeffs=None):\n",
+    "        self.terms = terms\n",
+    "        self.coeffs = coeffs if coeffs is not None else [1.0] * len(terms)\n",
+    "\n",
+    "    def __mul__(self, other):\n",
+    "        if isinstance(other, (int, float, complex)):\n",
+    "            return SumOperator(self.terms, [c * other for c in self.coeffs])\n",
+    "\n",
+    "        elif isinstance(other, ProductOperator):\n",
+    "            return SumOperator(\n",
+    "                [term * other for term in self.terms],\n",
+    "                self.coeffs.copy()\n",
+    "            )\n",
+    "\n",
+    "        elif isinstance(other, SumOperator):\n",
+    "            # Distribute all pairs of terms: (a_i A_i) * (b_j B_j)\n",
+    "            new_terms = []\n",
+    "            new_coeffs = []\n",
+    "            for c1, t1 in zip(self.coeffs, self.terms):\n",
+    "                for c2, t2 in zip(other.coeffs, other.terms):\n",
+    "                    new_terms.append(t1 * t2)\n",
+    "                    new_coeffs.append(c1 * c2)\n",
+    "            return SumOperator(new_terms, new_coeffs)\n",
+    "\n",
+    "        else:\n",
+    "            return NotImplemented\n",
+    "\n",
+    "    def __rmul__(self, other):\n",
+    "        return self.__mul__(other)\n",
+    "\n",
+    "    def tensorized_to_qobj(self, all_sites):\n",
+    "        return sum(coeff * term.tensorized_to_qobj(all_sites)\n",
+    "                   for coeff, term in zip(self.coeffs, self.terms))\n",
+    "\n",
+    "    def __repr__(self):\n",
+    "        return \" + \".join([f\"{c} * ({t})\" for c, t in zip(self.coeffs, self.terms)])\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 132,
+   "id": "7d1f476e",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "twodimensionalLattice:\n",
+      "  Position (0, 1): spin-0.5\n",
+      "  Position (0.5, 0): spin-0.5\n",
+      "  Position (0.5, 2): spin-0.5\n",
+      "  Position (1, 1): spin-0.5\n",
+      "  Position (1.5, 0): spin-0.5\n",
+      "  Position (1.5, 2): spin-0.5\n",
+      "  Position (2, 1): spin-0.5\n"
+     ]
+    },
+    {
+     "data": {
+      "image/png": "iVBORw0KGgoAAAANSUhEUgAAAYQAAAGHCAYAAACwKSV9AAAAOXRFWHRTb2Z0d2FyZQBNYXRwbG90bGliIHZlcnNpb24zLjYuMywgaHR0cHM6Ly9tYXRwbG90bGliLm9yZy/P9b71AAAACXBIWXMAAA9hAAAPYQGoP6dpAABCYklEQVR4nO3deViTV9o/8G+AEEAFB5CtIqIyIq4UF8C6jQKitTrVqp2+qFWv1nGXX8dKN0Xfqa/TRaBaO05Vaq2WtwWXVh1JRwF7FTtqwU7famsrFSthGKgSWYQA5/dHQmrIAyRsAfL9XFcufU7u8+Q8d05y51kSZEIIASIisno2lh4AERF1DiwIREQEgAWBiIh0WBCIiAgACwIREemwIBAREQAWBCIi0mFBICIiACwIRESkw4Jgxc6ePYulS5ciMDAQPXr0wEMPPYTZs2fj8uXLRrGTJ0+GTCaDTCaDjY0NevXqhUGDBuGJJ57Axx9/jLq6OpMec8mSJejZs2ebjL+goABbtmxBbm6u0X2nTp3Cli1bJPv1798fS5YsaZMxmCI4OBgPPfQQamtrG40ZP3483N3dUV1djS1btkAmk3XY+BqTkZEBmUyGjIwMfVt7j+3w4cNISEiQvE8mkzX6nFLbYEGwYnv27MFPP/2EdevW4dSpU0hMTERRURFCQ0Nx9uxZo/gBAwYgOzsbX3zxBY4dO4ZNmzahsrISTzzxBCZPnozS0tIOHX9BQQHi4+MbLQjx8fGS/Y4ePYqXX365nUf3q2XLlqGgoABnzpyRvP/777/HF198gZiYGNjb22P58uXIzs7usPGZo73H1lRByM7OxvLly9vtsQmws/QAyHJ2794NDw8Pg7bp06dj0KBBePXVV/G73/3O4D5HR0eEhoYatC1fvhwHDhzA0qVL8cwzzyAlJaXdx91awcHBHfp4Tz31FP70pz9h//79mDFjhtH9+/fvBwAsXboUANC3b1/07du3Q8doKkuOreHco3YgiBqYMmWK+O1vf2vQNmnSJDF06NBG+8yYMUPIZDLx008/NbnuxYsXix49ejQZc/36dbFkyRIxaNAg4ejoKHx8fMSjjz4qvv76a33MuXPnBACj2+bNm8XixYsl78vLyxNCCOHn5ycWL15s8Jh37twRsbGxwt/fX9jb24s+ffqI6OhocfXqVX1MVVWV2LZtmxg8eLCwt7cX7u7uYsmSJaKoqKjJ7RFCiCeffFLY29uL4uJig/aamhrh4+MjxowZo2/bvHmzaPjS/Mc//iEmTZokXF1dhYODg/D19RWPP/64KC8vN8jHuXPnDPrl5eUJAOLAgQP6tosXL4oFCxYIPz8/4eDgIPz8/MTChQuNnjupdTYc24EDByRzDUBMmjRJH7dr1y4xYcIE0adPH+Hk5CSGDRsmduzYIaqrq/UxkyZNklxPvfrn90H/+te/xGOPPSZ69+4tFAqFGDlypEhOTpbcjsOHD4sXXnhBeHt7i169eompU6eKa9euCfoV9xDIQGlpKb766iujvYPmPPbYYzh16hTOnz8PPz+/Vo2hoKAAbm5u+J//+R/06dMHv/zyC9577z2MGzcOOTk5GDx4MB5++GEcOHAATz/9NF566SXMnDkTgPYTbFVVFcrLy/Hxxx8bHN7w9vaWfLx79+7hkUcewU8//YTnn38e48aNQ1lZGbKysqBSqRAYGIi6ujrMnj0b58+fx8aNGxEeHo6bN29i8+bNmDx5Mi5dugRHR8dGt2nZsmU4cuQIDh06hHXr1unbz5w5g4KCArzyyiuN9v3pp58wc+ZMTJgwAfv370fv3r1x+/Zt/P3vf0d1dTWcnJzMyu9PP/2EwYMHY+HChXB1dYVKpcKePXswZswYfPvtt3B3dzd5XTNnzjQ6hJSdnY3Y2FgMHTpU3/bjjz/iD3/4A/z9/WFvb48rV67gz3/+M65du6bfQ3r77bfxzDPP4Mcff8TRo0ebfezvvvsO4eHh8PDwQFJSEtzc3HDo0CEsWbIE//73v7Fx40aD+BdeeAHjx4/Hu+++C7Vajeeffx6zZs3C1atXYWtra/I2d2uWrkjUuTz11FPCzs5OXLp0yaC9uT2E06dPCwBix44dTa7flD2EhmpqakR1dbUICAgQGzZs0LdfvHjR6NNvvVWrVhl9yq7XcA9h69atAoBQKpWNjuHIkSMCgEhNTTVorx/D22+/3eQ21NXVCX9/fzFixAiD9rlz5wonJydRWlqqb2v4Kfzjjz8WAERubm6j6zdnD6GhmpoaUVZWJnr06CESExObXKfU3suDrl27Jtzc3MSUKVNEVVWVZExtba3QaDTi4MGDwtbWVvzyyy/6+2bOnCn8/Pwk+6HBHsLChQuFQqEQ+fn5BnHR0dHCyclJ3L1712A7ZsyYYRD3v//7vwKAyM7ObnR7rA1PKpPeyy+/jA8++AA7d+5ESEiIWX1FG/5ZjZqaGrz66qsICgqCvb097OzsYG9vj+vXr+Pq1att9jj1Tp8+jd/+9reYNm1aozGffvopevfujVmzZqGmpkZ/GzVqFLy8vAyuxJEik8nw9NNP4+uvv9ZfxVVSUoJPPvkEc+fOhbOzc6N9R40aBXt7ezzzzDN47733cOPGjRZtZ72ysjI8//zzGDRoEOzs7GBnZ4eePXuivLy8VfktLCzE9OnT4e3tjaNHj8Le3l5/X05ODh577DG4ubnB1tYWcrkcixYtQm1tLb7//vsWPd7Zs2cxdepU+Pr6GrQvWbIEFRUVRnsujz32mMHyiBEjAAA3b95s0eN3RywIBACIj4/Hf//3f+PPf/4zVq9ebXb/+heVj49Pq8cSGxuLl19+GXPmzMEnn3yCL7/8EhcvXsTIkSNRWVnZ6vU39J///KfZE6X//ve/cffuXdjb20MulxvcCgsLUVxc3OzjPP3007CxscGBAwcAAB988AGqq6uxbNmyJvsNHDgQn332GTw8PLBq1SoMHDgQAwcORGJioukb+YA//OEP2LVrF5YvX44zZ87gn//8Jy5evIg+ffq0OL/37t3DjBkzoNFocPr0abi4uOjvy8/Px4QJE3D79m0kJibi/PnzuHjxInbv3g0ALX7MkpISycOA9XOwpKTEoN3Nzc1gWaFQtOrxuyOeQyDEx8djy5Yt2LJlC1544YUWrePEiROQyWSYOHFiq8dz6NAhLFq0CK+++qpBe3FxMXr37t3q9TfUp08f/Pzzz03GuLu7w83NDX//+98l7+/Vq1ezj9O3b19ERkbi8OHDeOONN3DgwAEMGjTIpJxNmDABEyZMQG1tLS5duoS33noL69evh6enJxYuXAgHBwcAQFVVlUG/hoWqtLQUn376KTZv3oxNmzbp26uqqvDLL780Ow4pGo0Gc+fOxY8//ojz588bFddjx46hvLwcaWlpBueXpC4XNoebmxtUKpVRe0FBAQCYdS6EtLiHYOW2bduGLVu24KWXXsLmzZtbtI4DBw7g9OnTePLJJ9GvX79Wj0kmk+k/vdU7efIkbt++bdDW1Cc8cz79RUdH4/vvv5f87kW9Rx99FCUlJaitrcXo0aONboMHD272cQDtyeU7d+7glVdeQW5uLp5++mmzvuhla2uLcePG6T9df/XVVwC0X7YDgK+//tog/sSJEwbLMpkMQgij/L777rtNfnGuKcuWLUNGRgbS0tL0h2EaPiYAg8cUQuBvf/ubUaxCoTD5E/vUqVNx9uxZfQGod/DgQTg5OfEy1RbgHoIVe+ONN/DKK69g+vTpmDlzJi5cuGBwf8MXVGVlpT6msrISN27cwLFjx/Dpp59i0qRJeOedd0x63NraWnz88cdG7T169EB0dDQeffRRJCcnIzAwECNGjMDly5fx2muvGX3yHDhwIBwdHfHBBx9gyJAh6NmzJ3x8fODj44Phw4cDAHbs2IHo6GjY2tpixIgRBse1661fvx4pKSmYPXs2Nm3ahLFjx6KyshKZmZl49NFHMWXKFCxcuBAffPABZsyYgXXr1mHs2LGQy+X4+eefce7cOcyePRu///3vm932xx57DO7u7njttddga2uLxYsXN9vnnXfewdmzZzFz5kz069cP9+/f11+ZU3/ew8vLC9OmTcP27dvxm9/8Bn5+fvjHP/6BtLQ0g3U5Oztj4sSJeO211+Du7o7+/fsjMzMT+/bta9He12uvvYb3338fa9asQY8ePQzmkLOzM4KCghAREQF7e3s8+eST2LhxI+7fv489e/bgzp07RusbPnw40tLSsGfPHoSEhMDGxgajR4+WfOzNmzfj008/xZQpU/DKK6/A1dUVH3zwAU6ePIm//OUvBoetyEQWPqlNFtTYdd9ocP23VGyPHj3EgAEDxLx588RHH30kamtrTXrMxr4jAEB/dcmdO3fEsmXLhIeHh3BychKPPPKIOH/+vJg0aZLBte1CaK/+CQwMFHK53OAqlKqqKrF8+XLRp08fIZPJTPoewrp160S/fv2EXC4XHh4eYubMmQbXqWs0GvH666+LkSNHCgcHB9GzZ08RGBgonn32WXH9+nWT875hwwbJq17qNbySJzs7W/z+978Xfn5+QqFQCDc3NzFp0iRx4sQJg34qlUrMmzdPuLq6ChcXF/Ff//Vf4tKlS0ZXGf38889i7ty54je/+Y3o1auXmD59uvjmm2+M8mLKVUZNPZ8PPleffPKJPm8PPfSQ+NOf/qS/Mu3B9f/yyy9i3rx5onfv3vrnrd6Dz2+9f/3rX2LWrFnCxcVF2Nvbi5EjRxpdUVW/HR999JFBuylXYFkbmRBteHkIERF1WTyHQEREAFgQiIhIhwWBiIgAsCAQEZEOCwIREQFgQSAiIh1+MU1CXV0dCgoK0KtXr07xpwyJiFpKCIF79+7Bx8cHNjZN7wOwIEgoKCgw+gVFIqKu7NatW83+iCMLgoT6Hyq7detWkz9L3JBGo0F6ejoiIyMhl8vba3hdDvMijXmRxrxIa2le1Go1fH19TfoBRhYECfWHiZydnc0uCE5OTnB2duZEfgDzIo15kca8SGttXkw5/M2TykREBIAFgYiIdFgQiIgIAAsCtTchgPo/ZVhSol0magzni0WxIFD7uHsXSEwEAgKAAQO0bQMGaJcTE7X3E9XjfOkUWBCo7Z05A/TtC2zYANy4YXjfjRva9r59tXFEnC+dBgsCta0zZ4CZM4HKSu3ufsNd/vq2ykptHF/k1o3zpVOxaEHYvn07xowZg169esHDwwNz5szBd99912y/zMxMhISEwMHBAQMGDJD8W76pqakICgqCQqFAUFAQjh492h6bQA+6exeYO1f7Aq6razq2rk4bN3cuDwdYK86XTseiBSEzMxOrVq3ChQsXoFQqUVNTg8jISJSXlzfaJy8vDzNmzMCECROQk5ODF154AWvXrkVqaqo+Jjs7GwsWLEBMTAyuXLmCmJgYzJ8/H19++WVHbJb1eu89oKKi+Rd3vbo6bfzBg+07LuqcOF86Hwv/TWcDRUVFAoDIzMxsNGbjxo0iMDDQoO3ZZ58VoaGh+uX58+eL6dOnG8RERUWJhQsXmjSO0tJSAUCUlpaaMXohqqurxbFjx0R1dbVZ/bqFujohBg4UQiar38nX36odHbV5cXQ0uk/IZNp+dXWW3oIOx/nC+WKOls4Xc97POtVPV5SWlgIAXF1dG43Jzs5GZGSkQVtUVBT27dsHjUYDuVyO7OxsbNiwwSgmISFBcp1VVVWoqqrSL6vVagDar4prNBqTx18fa06fbqOkBCgoABwcjO7SODoa/GukoAAoKgKaeN67I84XzhdztHS+mBPfaQqCEAKxsbF45JFHMGzYsEbjCgsL4enpadDm6emJmpoaFBcXw9vbu9GYwsJCyXVu374d8fHxRu3p6elwcnIye1uUSqXZfbqFI0eavFu5f3/jd1640MaD6To4X6Rxvkgzd75UVFSYHNtpCsLq1avx9ddf4/PPP282tuGPNAndlQkPtkvFNPbjTnFxcYiNjdUv1/86YGRkpNk/bqdUKhEREWF9P8pVUvLr9eMNaBwdody/HxFLl0JeWSndPy/PKj/xcb4Y43yR1tL5Un/EwxSdoiCsWbMGJ06cQFZWVrO/1+3l5WX0Sb+oqAh2dnZwc3NrMqbhXkM9hUIBhUJh1C6Xy1v0Qm1pvy7N0xPw8dFeN97It0vllZXGL3CZTPvG4OGh/b8V4nzhfDGHufPFnFiLXmUkhMDq1auRlpaGs2fPwt/fv9k+YWFhRrtM6enpGD16tH7DG4sJDw9vu8GTIZkMWLOmZX3XrrXaF7fV4nzplCxaEFatWoVDhw7h8OHD6NWrFwoLC1FYWIjKBz4VxMXFYdGiRfrlFStW4ObNm4iNjcXVq1exf/9+7Nu3D88995w+Zt26dUhPT8eOHTtw7do17NixA5999hnWr1/fkZtnfRYvBpycgGb+TJ+ejY02/oHnl6wI50unY9GCsGfPHpSWlmLy5Mnw9vbW31JSUvQxKpUK+fn5+mV/f3+cOnUKGRkZGDVqFLZt24akpCTMnTtXHxMeHo4PP/wQBw4cwIgRI5CcnIyUlBSMGzeuQ7fP6vTuDaSmaj+9Nfcit7HRxqWlafuR9eF86XQseg5BNHLs8EHJyclGbZMmTcJXX33VZL958+Zh3rx5LR0atVRUFHDypPYbpVJXN9Tv6js6al/cDS4hJivD+dKp8LeMqO1FRQE//wwkJBhfSTJggLb99m2+uEmL86XT6BRXGVE31Lu39uTfmjXaLxFduKC9VNCKrw6hJnC+dArcQ6D2JZP9er24qytf3NQ0zheLYkEgIiIALAhERKTDgkBERABYEIiISIcFgYiIALAgEBGRDgsCEREBYEEgIiIdFgQiIgLAgkBERDosCEREBIAFgYiIdFgQiIgIAAsCERHpsCAQEREAFgQiItJhQSAiIgAsCEREpMOCQEREAFgQiIhIhwWBiIgAWLggZGVlYdasWfDx8YFMJsOxY8eajF+yZAlkMpnRbejQofqY5ORkyZj79++389YQEXVtFi0I5eXlGDlyJHbt2mVSfGJiIlQqlf5269YtuLq64oknnjCIc3Z2NohTqVRwcHBoj00gIuo27Cz54NHR0YiOjjY53sXFBS4uLvrlY8eO4c6dO3j66acN4mQyGby8vNpsnERE1sCiBaG19u3bh2nTpsHPz8+gvaysDH5+fqitrcWoUaOwbds2BAcHN7qeqqoqVFVV6ZfVajUAQKPRQKPRmDye+lhz+lgD5kUa8yKNeZHW0ryYEy8TQgiz1t5OZDIZjh49ijlz5pgUr1Kp4Ovri8OHD2P+/Pn69gsXLuCHH37A8OHDoVarkZiYiFOnTuHKlSsICAiQXNeWLVsQHx9v1H748GE4OTm1aHuIiDqDiooK/OEPf0BpaSmcnZ2bjO2yBWH79u144403UFBQAHt7+0bj6urq8PDDD2PixIlISkqSjJHaQ/D19UVxcXGzCXyQRqOBUqlEREQE5HK5yf26O+ZFGvMijXmR1tK8qNVquLu7m1QQuuQhIyEE9u/fj5iYmCaLAQDY2NhgzJgxuH79eqMxCoUCCoXCqF0ul7doQra0X3fHvEhjXqQxL9LMzYs5sV3yewiZmZn44YcfsGzZsmZjhRDIzc2Ft7d3B4yMiKjrsugeQllZGX744Qf9cl5eHnJzc+Hq6op+/fohLi4Ot2/fxsGDBw367du3D+PGjcOwYcOM1hkfH4/Q0FAEBARArVYjKSkJubm52L17d7tvDxFRV2bRgnDp0iVMmTJFvxwbGwsAWLx4MZKTk6FSqZCfn2/Qp7S0FKmpqUhMTJRc5927d/HMM8+gsLAQLi4uCA4ORlZWFsaOHdt+G0JE1A1YtCBMnjwZTZ3TTk5ONmpzcXFBRUVFo3127tyJnTt3tsXwiIisSpc8h0BERG2PBYGIiACwIBARkQ4LAhERAWBBICIiHRYEIiICwIJAREQ6LAhERASABYGIiHRYEIiICAALAhER6bAgEBERABYEIiLSYUEgIiIALAhERKTDgkBERABYEIiISIcFgYiIALAgEBGRDgsCEREBYEEgIiIdFgQiIgLAgkBERDosCEREBMDCBSErKwuzZs2Cj48PZDIZjh071mR8RkYGZDKZ0e3atWsGcampqQgKCoJCoUBQUBCOHj3ajltBRNQ9WLQglJeXY+TIkdi1a5dZ/b777juoVCr9LSAgQH9fdnY2FixYgJiYGFy5cgUxMTGYP38+vvzyy7YePhFRt2JnyQePjo5GdHS02f08PDzQu3dvyfsSEhIQERGBuLg4AEBcXBwyMzORkJCAI0eOtGa4RETdmkULQksFBwfj/v37CAoKwksvvYQpU6bo78vOzsaGDRsM4qOiopCQkNDo+qqqqlBVVaVfVqvVAACNRgONRmPyuOpjzeljDZgXacyLNOZFWkvzYk58lyoI3t7e2Lt3L0JCQlBVVYX3338fU6dORUZGBiZOnAgAKCwshKenp0E/T09PFBYWNrre7du3Iz4+3qg9PT0dTk5OZo9TqVSa3ccaMC/SmBdpzIs0c/NSUVFhcmyXKgiDBw/G4MGD9cthYWG4desWXn/9dX1BAACZTGbQTwhh1PaguLg4xMbG6pfVajV8fX0RGRkJZ2dnk8en0WigVCoREREBuVxucr/ujnmRxrxIY16ktTQv9Uc8TNGlCoKU0NBQHDp0SL/s5eVltDdQVFRktNfwIIVCAYVCYdQul8tbNCFb2q+7Y16kMS/SmBdp5ubFnNgu/z2EnJwceHt765fDwsKMdqnS09MRHh7e0UMjIupSLLqHUFZWhh9++EG/nJeXh9zcXLi6uqJfv36Ii4vD7du3cfDgQQDaK4j69++PoUOHorq6GocOHUJqaipSU1P161i3bh0mTpyIHTt2YPbs2Th+/Dg+++wzfP755x2+fUREXYlFC8KlS5cMrhCqP46/ePFiJCcnQ6VSIT8/X39/dXU1nnvuOdy+fRuOjo4YOnQoTp48iRkzZuhjwsPD8eGHH+Kll17Cyy+/jIEDByIlJQXjxo3ruA0jIuqCLFoQJk+eDCFEo/cnJycbLG/cuBEbN25sdr3z5s3DvHnzWjs8IiKr0uXPIRARUdtgQSAiIgAsCEREpMOCQEREAFgQiIhIhwWBiIgAsCAQEZEOCwIREQFgQSAiIh0WBCIiAsCCQEREOiwIREQEgAWBiIh0WBCIiAgACwIREemwIBAREQAWBCIi0mFBICIiACwIRESkw4JAREQAWBCIiEiHBYGIiACwIBARkQ4LAhERAbBwQcjKysKsWbPg4+MDmUyGY8eONRmflpaGiIgI9OnTB87OzggLC8OZM2cMYpKTkyGTyYxu9+/fb8ctISLq+ixaEMrLyzFy5Ejs2rXLpPisrCxERETg1KlTuHz5MqZMmYJZs2YhJyfHIM7Z2Rkqlcrg5uDg0B6bQETUbdhZ8sGjo6MRHR1tcnxCQoLB8quvvorjx4/jk08+QXBwsL5dJpPBy8urrYZJRGQVLFoQWquurg737t2Dq6urQXtZWRn8/PxQW1uLUaNGYdu2bQYFo6GqqipUVVXpl9VqNQBAo9FAo9GYPJ76WHP6WAPmRRrzIo15kdbSvJgT36ULwhtvvIHy8nLMnz9f3xYYGIjk5GQMHz4carUaiYmJGD9+PK5cuYKAgADJ9Wzfvh3x8fFG7enp6XBycjJ7XEql0uw+1oB5kca8SGNepJmbl4qKCpNjZUIIYe6A2oNMJsPRo0cxZ84ck+KPHDmC5cuX4/jx45g2bVqjcXV1dXj44YcxceJEJCUlScZI7SH4+vqiuLgYzs7OJm+DRqOBUqlEREQE5HK5yf26O+ZFGvMijXmR1tK8qNVquLu7o7S0tNn3sy65h5CSkoJly5bho48+arIYAICNjQ3GjBmD69evNxqjUCigUCiM2uVyeYsmZEv7dXfMizTmRRrzIs3cvJgT2+W+h3DkyBEsWbIEhw8fxsyZM5uNF0IgNzcX3t7eHTA6IqKuy6J7CGVlZfjhhx/0y3l5ecjNzYWrqyv69euHuLg43L59GwcPHgSgLQaLFi1CYmIiQkNDUVhYCABwdHSEi4sLACA+Ph6hoaEICAiAWq1GUlIScnNzsXv37o7fQCKiLsSiewiXLl1CcHCw/gqg2NhYBAcH45VXXgEAqFQq5Ofn6+P/+te/oqamBqtWrYK3t7f+tm7dOn3M3bt38cwzz2DIkCGIjIzE7du3kZWVhbFjx3bsxhERdTEW3UOYPHkymjqnnZycbLCckZHR7Dp37tyJnTt3tnJkRETWp8udQyAiovbBgkBERABYEIiISIcFgYiIALAgEBGRDgsCEREBYEEgIiIdFgQiIgLAgkBERDosCEREBIAFgYiIdFgQiIgIAAsCERHpsCAQEREAFgQiItJhQSAiIgAsCEREpMOCQEREAFgQiIhIhwWBiIgAsCC0HSGAkhLt/0tKtMtEjeF8IXN00HxhQWitu3eBxEQgIAAYMEDbNmCAdjkxUXs/UT3OFzJHB88XFoTWOHMG6NsX2LABuHHD8L4bN7Ttfftq44g4X8gcFpgvLAgtdeYMMHMmUFmp3X1ruAtX31ZZqY3ji9y6cb6QOSw0X0wuCD///HObPOCDsrKyMGvWLPj4+EAmk+HYsWPN9snMzERISAgcHBwwYMAAvPPOO0YxqampCAoKgkKhQFBQEI4ePdq2A797F5g7V/uE1NU1HVtXp42bO5eHA6wV5wuZw4LzxeSCMGzYMLz//vutfsAHlZeXY+TIkdi1a5dJ8Xl5eZgxYwYmTJiAnJwcvPDCC1i7di1SU1P1MdnZ2ViwYAFiYmJw5coVxMTEYP78+fjyyy/bbuDvvQdUVDT/ZNWrq9PGHzzYdmOgroPzhcxhyfkiTLR7927Rq1cv8fjjj4vi4mJTu5kMgDh69GiTMRs3bhSBgYEGbc8++6wIDQ3VL8+fP19Mnz7dICYqKkosXLjQ5LGUlpYKAKK0tNT4zro6IQYOFEImq99p09+qHR3FsWPHRLWjo9F9QibT9qurM3kc3UV1dbU2L9XVlh5Kx+N8MRvnS9vOlybfzxqwM7VwrFy5EtHR0Vi2bBmGDh2KvXv34rHHHmt9RTJDdnY2IiMjDdqioqKwb98+aDQayOVyZGdnY8OGDUYxCQkJja63qqoKVVVV+mW1Wg0A0Gg00Gg0hsElJUBBAeDgYLQejaOjwb9GCgqAoiLA1bXRsXRH9Tk0yqU14HwxG+dL284Xc/JockEAAH9/f5w9exa7du3C3LlzMWTIENjZGa7iq6++MmeVZiksLISnp6dBm6enJ2pqalBcXAxvb+9GYwoLCxtd7/bt2xEfH2/Unp6eDicnJ+MOR440OU7l/v2N33nhQpN9uzOlUmnpIVgG50uLcL5IM3e+VFRUmPzQZhUEALh58yZSU1Ph6uqK2bNnGxWE9iaTyQyWhe7s+4PtUjEN2x4UFxeH2NhY/bJarYavry8iIyPh7OxsGFxS8uv1wA1oHB2h3L8fEUuXQl5ZKf1geXlW+YlPqVQiIiICcrnc0sPpWJwvZuN8adv5Un/EwxRmvZv/7W9/w//7f/8P06ZNwzfffIM+ffqY073VvLy8jD7pFxUVwc7ODm5ubk3GNNxreJBCoYBCoTBql8vlxhPS0xPw8dFeB9zItwXllZXGT5hMpn2iPTy0/7dCkvns7jhfWozzpW3mizk5NPkqo+nTp+P555/Hrl27kJaW1uHFAADCwsKMdiPT09MxevRo/UY3FhMeHt42g5DJgDVrWtZ37VqrfXFbLc4XMoeF54vJBaG2thZff/01Fi1a1KoHfFBZWRlyc3ORm5sLQHtZaW5uLvLz8wFoD+U8+HgrVqzAzZs3ERsbi6tXr2L//v3Yt28fnnvuOX3MunXrkJ6ejh07duDatWvYsWMHPvvsM6xfv77Nxo3FiwEnJ8DGxPTZ2Gjj2zB31IVwvpA5LDhfTC4ISqUSffv2bfUDPujSpUsIDg5GcHAwACA2NhbBwcF45ZVXAAAqlUpfHADtSe1Tp04hIyMDo0aNwrZt25CUlIS5c+fqY8LDw/Hhhx/iwIEDGDFiBJKTk5GSkoJx48a13cB79wZSU7XVuLknzcZGG5eWpu1H1ofzhcxhwfnSsWeEG5g8ebL+pLCU5ORko7ZJkyY1eyXTvHnzMG/evNYOr2lRUcDJk9pvCEqdxa/fdXN01D5ZDS6XJSvD+ULmsNB84W8ZtUZUFPDzz0BCgvGVAQMGaNtv3+aLm7Q4X8gcFpgvFt1D6BZ699aezFmzRvulkAsXtJd+WfHVIdQEzhcyRwfPF+4htBWZ7Nfrf11d+eKmpnG+kDk6aL6wIBAREQAWBCIi0mFBICIiACwIRESkw4JAREQAWBCIiEiHBYGIiACwIBARkQ4LAhERAWBBICIiHRYEIiICwIJAREQ6LAhERASABYGIiHRYEIiICAALAhER6bAgEBERABYEIiLSYUEgIiIALAhERKTDgkBERAA6QUF4++234e/vDwcHB4SEhOD8+fONxi5ZsgQymczoNnToUH1McnKyZMz9+/c7YnOIiLosixaElJQUrF+/Hi+++CJycnIwYcIEREdHIz8/XzI+MTERKpVKf7t16xZcXV3xxBNPGMQ5OzsbxKlUKjg4OHTEJhERdVkWLQhvvvkmli1bhuXLl2PIkCFISEiAr68v9uzZIxnv4uICLy8v/e3SpUu4c+cOnn76aYM4mUxmEOfl5dURm0NE1KXZWeqBq6urcfnyZWzatMmgPTIyEl988YVJ69i3bx+mTZsGPz8/g/aysjL4+fmhtrYWo0aNwrZt2xAcHNzoeqqqqlBVVaVfVqvVAACNRgONRmPqJuljzeljDZgXacyLNOZFWkvzYk68xQpCcXExamtr4enpadDu6emJwsLCZvurVCqcPn0ahw8fNmgPDAxEcnIyhg8fDrVajcTERIwfPx5XrlxBQECA5Lq2b9+O+Ph4o/b09HQ4OTmZsVVaSqXS7D7WgHmRxrxIY16kmZuXiooKk2MtVhDqyWQyg2UhhFGblOTkZPTu3Rtz5swxaA8NDUVoaKh+efz48Xj44Yfx1ltvISkpSXJdcXFxiI2N1S+r1Wr4+voiMjISzs7OJm+LRqOBUqlEREQE5HK5yf26O+ZFGvMijXmR1tK81B/xMIXFCoK7uztsbW2N9gaKioqM9hoaEkJg//79iImJgb29fZOxNjY2GDNmDK5fv95ojEKhgEKhMGqXy+UtmpAt7dfdMS/SmBdpzIs0c/NiTqzFTirb29sjJCTEaPdHqVQiPDy8yb6ZmZn44YcfsGzZsmYfRwiB3NxceHt7t2q8RETdnUUPGcXGxiImJgajR49GWFgY9u7di/z8fKxYsQKA9lDO7du3cfDgQYN++/btw7hx4zBs2DCjdcbHxyM0NBQBAQFQq9VISkpCbm4udu/e3SHbRETUVVm0ICxYsAAlJSXYunUrVCoVhg0bhlOnTumvGlKpVEbfSSgtLUVqaioSExMl13n37l0888wzKCwshIuLC4KDg5GVlYWxY8e2+/YQEXVlFj+pvHLlSqxcuVLyvuTkZKM2FxeXJs+a79y5Ezt37myr4RERWQ2L/3QFERF1DiwIREQEgAWBiIh0WBCIiAgACwIREemwIBAREQAWBCIi0mFBICIiACwIRESkw4JAREQAWBCIiEiHBYGIiACwIBARkQ4LAhERAWBBICIiHRYEIiICwIJAREQ6LAhERASABYGIiHRYEIiICAALAhER6bAgEBERABYEIiLSYUEgIiIAnaAgvP322/D394eDgwNCQkJw/vz5RmMzMjIgk8mMbteuXTOIS01NRVBQEBQKBYKCgnD06NH23gwioi7PogUhJSUF69evx4svvoicnBxMmDAB0dHRyM/Pb7Lfd999B5VKpb8FBATo78vOzsaCBQsQExODK1euICYmBvPnz8eXX37Z3ptDRNSlWbQgvPnmm1i2bBmWL1+OIUOGICEhAb6+vtizZ0+T/Tw8PODl5aW/2dra6u9LSEhAREQE4uLiEBgYiLi4OEydOhUJCQntvDVERF2bnaUeuLq6GpcvX8amTZsM2iMjI/HFF1802Tc4OBj3799HUFAQXnrpJUyZMkV/X3Z2NjZs2GAQHxUV1WRBqKqqQlVVlX5ZrVYDADQaDTQajambpI81p481YF6kMS/SmBdpLc2LOfEWKwjFxcWora2Fp6enQbunpycKCwsl+3h7e2Pv3r0ICQlBVVUV3n//fUydOhUZGRmYOHEiAKCwsNCsdQLA9u3bER8fb9Senp4OJycnczcNSqXS7D7WgHmRxrxIY16kmZuXiooKk2MtVhDqyWQyg2UhhFFbvcGDB2Pw4MH65bCwMNy6dQuvv/66viCYu04AiIuLQ2xsrH5ZrVbD19cXkZGRcHZ2NnlbNBoNlEolIiIiIJfLTe7X3TEv0pgXacyLtJbmpf6IhyksVhDc3d1ha2tr9Mm9qKjI6BN+U0JDQ3Ho0CH9speXl9nrVCgUUCgURu1yubxFE7Kl/bo75kUa8yKNeZFmbl7MibXYSWV7e3uEhIQY7f4olUqEh4ebvJ6cnBx4e3vrl8PCwozWmZ6ebtY6iYiskUUPGcXGxiImJgajR49GWFgY9u7di/z8fKxYsQKA9lDO7du3cfDgQQDaK4j69++PoUOHorq6GocOHUJqaipSU1P161y3bh0mTpyIHTt2YPbs2Th+/Dg+++wzfP755xbZRiKirsKiBWHBggUoKSnB1q1boVKpMGzYMJw6dQp+fn4AAJVKZfCdhOrqajz33HO4ffs2HB0dMXToUJw8eRIzZszQx4SHh+PDDz/ESy+9hJdffhkDBw5ESkoKxo0b1+HbR0TUlVj8pPLKlSuxcuVKyfuSk5MNljdu3IiNGzc2u8558+Zh3rx5bTE8IiKrYfGfriAios6BBYGIiACwIBARkQ4LAhERAWBBICIiHRYEIiICwIJAREQ6LAhERASABYGIiHRYEIiICAALAhER6bAgEBERABYEIiLSYUEgIiIALAhERKTDgkBERABYEIiISIcFgYiIALAgEBGRDgsCEREBYEEgIiIdFgQiIgLAgkBERDosCEREBKATFIS3334b/v7+cHBwQEhICM6fP99obFpaGiIiItCnTx84OzsjLCwMZ86cMYhJTk6GTCYzut2/f7+9N4WIqEuzaEFISUnB+vXr8eKLLyInJwcTJkxAdHQ08vPzJeOzsrIQERGBU6dO4fLly5gyZQpmzZqFnJwcgzhnZ2eoVCqDm4ODQ0dsEhFRl2VnyQd/8803sWzZMixfvhwAkJCQgDNnzmDPnj3Yvn27UXxCQoLB8quvvorjx4/jk08+QXBwsL5dJpPBy8urXcdORNTdWKwgVFdX4/Lly9i0aZNBe2RkJL744guT1lFXV4d79+7B1dXVoL2srAx+fn6ora3FqFGjsG3bNoOC0VBVVRWqqqr0y2q1GgCg0Wig0WhM3SR9rDl9rAHzIo15kca8SGtpXsyJt1hBKC4uRm1tLTw9PQ3aPT09UVhYaNI63njjDZSXl2P+/Pn6tsDAQCQnJ2P48OFQq9VITEzE+PHjceXKFQQEBEiuZ/v27YiPjzdqT09Ph5OTkxlbpaVUKs3uYw2YF2nMizTmRZq5eamoqDA51qKHjADt4Z0HCSGM2qQcOXIEW7ZswfHjx+Hh4aFvDw0NRWhoqH55/PjxePjhh/HWW28hKSlJcl1xcXGIjY3VL6vVavj6+iIyMhLOzs4mb4tGo4FSqURERATkcrnJ/bo75kUa8yKNeZHW0rzUH/EwhcUKgru7O2xtbY32BoqKioz2GhpKSUnBsmXL8NFHH2HatGlNxtrY2GDMmDG4fv16ozEKhQIKhcKoXS6Xt2hCtrRfd8e8SGNepDEv0szNizmxFrvKyN7eHiEhIUa7P0qlEuHh4Y32O3LkCJYsWYLDhw9j5syZzT6OEAK5ubnw9vZu9ZiJiLozix4yio2NRUxMDEaPHo2wsDDs3bsX+fn5WLFiBQDtoZzbt2/j4MGDALTFYNGiRUhMTERoaKh+78LR0REuLi4AgPj4eISGhiIgIABqtRpJSUnIzc3F7t27LbORRERdhEULwoIFC1BSUoKtW7dCpVJh2LBhOHXqFPz8/AAAKpXK4DsJf/3rX1FTU4NVq1Zh1apV+vbFixcjOTkZAHD37l0888wzKCwshIuLC4KDg5GVlYWxY8d26LYREXU1Fj+pvHLlSqxcuVLyvvo3+XoZGRnNrm/nzp3YuXNnG4yMiMi6WPynK4iIqHNgQSAiIgAsCEREpMOCQEREAFgQiIhIhwWBiIgAsCAQEZEOCwIREQFgQSAiIh2Lf1OZyBxCCNTU1KC2ttbSQ2k1jUYDOzs73L9/v1tsj62tLezs7Ez6+XrqnFgQqMuorq6GSqUy6w9+dGZCCHh5eeHWrVvd5k3UyckJ3t7esLe3t/RQqAVYEKhLqKurQ15eHmxtbeHj4wN7e/su/yZaV1eHsrIy9OzZEzY2XfvorRAC1dXV+M9//oO8vDwEBAR0+W2yRiwI1CVUV1ejrq4Ovr6+Lfqzpp1RXV0dqqur4eDg0C3ePB0dHSGXy3Hz5k39dlHX0vVnIVmV7vDG2Z3x+ena+OwREREAHjIiayQEUFIClJUBPXsCbm5AFz8fQdQWuIdA1uPuXSAxEQgIAPr0Afz9tf8GBGjb79619AiNTJ48GevXr7f0MMhKsCCQdThzBujbF9iwAbhxw/C+Gze07X37auM6kbS0NGzbtq3V61m3bh1CQkKgUCgwatSoRuMyMjLg7e0NIQS2b9+OMWPGoFevXvDw8MCcOXPw3XfftXos1HmxIFD3d+YMMHMmUFmpPVwkhOH99W2Vldq4TlQUXF1d0atXr1avRwiBpUuXYsGCBU3GnThxAo899hhkMhkyMzOxatUqXLhwAUqlEjU1NYiMjER5eXmrx0OdEwsCdW937wJz52rf8Ovqmo6tq9PGzZ3bpoePPv74YwwfPhyOjo5wc3PDtGnTUF5ejqeffhpPPfUUtm7dCg8PDzg7O+PZZ59FdXW1vm/DQ0b9+/fHq6++iqVLl6JXr17o168f9u7d2+wYkpKSsGrVKgwYMKDJuPqCAAB///vfsWTJEgwdOhQjR47EgQMHkJ+fj8uXL7csEdTpsSBQ+6o/gQto/2346by9vfceUFHRfDGoV1enjT94sE0eXqVS4cknn8TSpUtx9epVZGRk4PHHH4fQ5SErKwtXr17FuXPncOTIERw9ehTx8fFNrvONN97A6NGjkZOTg5UrV+KPf/wjrl271uqx/t///R8KCwsxdepUyftLS0sBaPda2o2l54uVY0Gg9vHgCdz6T6UDBnTsCVwhgLfealnfpKQ2eTNSqVSoqanB448/jv79+2P48OFYuXIlevbsCQCQy+XYt28fhg4dipkzZ2Lr1q1ISkpCXRMFbMaMGVi5ciUGDRqE559/Hu7u7sjIyGj1WI8fP46oqCjJL5QJIRAbG4tHHnkEw4YNa/VjGekM84VYEKgddJYTuCUlwI8/mv/GLoS23y+/tHoII0eOxNSpUzF8+HA88cQT+Nvf/oY7d+7o7x82bJjBN6/DwsJQVlaGW7duNbrOESNG6P8vk8ng5eWFoqIiAEB0dDR69uyJnj17YujQoWaN9fjx4/rDRQ2tXr0aX3/9NY4cOWLWOk3SWeYLsSBQG+tMJ3DLylrX/969Vg/B1tYWSqUSp0+fRlBQEN566y0MHjwYeXl5TfZr6nea5HK5UWz9HsW7776L3Nxc5Obm4tSpUyaPs7CwEF999RVmzpxpdN+aNWtw4sQJnDt3Dn379jV5nSbpTPOFLF8Q3n77bfj7+8PBwQEhISE4f/58k/GZmZkICQmBg4MDBgwYgHfeeccoJjU1FUFBQVAoFAgKCsLRo0fba/j0oE5wAteA7rBMi7XB1T2A9g17/PjxiI+PR05ODuzt7fVz8ptvvkFlZaU+9sKFC+jZs2eL33gfeughDBo0CIMGDYKfn5/J/U6cOIGwsDC4u7vr24QQWL16NdLS0nD27Fn4+/u3aEyN6mzzhSxbEFJSUrB+/Xq8+OKLyMnJwYQJExAdHY38/HzJ+Ly8PMyYMQMTJkxATk4OXnjhBaxduxapqan6mOzsbCxYsAAxMTG4cuUKYmJiMH/+fHz55ZcdtVnWy8IncI24uQEDB5r/LWSZTNuvDU6efvnll3j11Vdx6dIl5OfnIy0tDf/5z38wZMgQANq/ibB8+XJ8++23OH36NDZv3ozVq1e3+W8C/fDDD8jNzUVhYSEqKyv1exH1VzSdOHECs2fPNuizatUqHDp0CIcPH0avXr1QWFio798mOtt8IUBY0NixY8WKFSsM2gIDA8WmTZsk4zdu3CgCAwMN2p599lkRGhqqX54/f76YPn26QUxUVJRYuHChyeMqLS0VAERpaanJfYQQorq6Whw7dkxUV1eb1a9bqKsTYuBAIWSy+p18/a3a0VGbF0dHo/uETKbtV1fX5OorKyvFt99+KyorK80bV0KC5JiavMlkQiQmtiIZv/r2229FVFSU6NOnj1AoFOK3v/2teOutt4QQQixatEjMmDFDvPzyy8LNzU307NlTLF++XNy/f1/ff9KkSWLdunX6ZT8/P7Fz506Dxxg5cqTYvHlzk+OYNGmSAGB0y8vLE2VlZcLBwUF8//33Bn2k4gGIAwcONPo4Jj9P7TxfuqOWvr+Y835msd8yqq6uxuXLl7Fp0yaD9sjISHzxxReSfbKzsxEZGWnQFhUVhX379kGj0UAulyM7OxsbNmwwiklISGh0LFVVVaiqqtIvq9VqANpPbxqNxuRtqo81p0+3UVICFBQAEleoaBwdDf41UlAAFBU1+Ylco9FACIG6uromr8AxEhMD2YsvApWVkJnQT9jYAI6OEP/1X6Z/cm3C4MGDJY/lP7gNmzdvxpYtWyTvP3v2rMHyDd1J1wf7f/XVV0ZtDdWvR0paWhr8/f0xcOBAg3U09VfcGnusuro6CCGg0Whga2vbaP/2ni/dUUvfX8yJt1hBKC4uRm1tLTw9PQ3aPT09UVhYKNmnsLBQMr6mpgbFxcXw9vZuNKaxdQLA9u3bJa/9Tk9Pb9Fv7yuVSrP7dAvNXIGi3L+/8TsvXGiyr52dHby8vFBWVmbwxa1m2djA7r330GPBAggbmyaLgrCxAWQylB88iBobG0D3waC91L9Q77XByevWsLGxwcsvv6z/INQa1dXVqKysRFZWFmpqapoObsf50p2Z+/5izl8YtPivnTa8mkII0eQVFlLxDdvNXWdcXBxiY2P1y2q1Gr6+voiMjISzs3PzG6Gj0WigVCoRERFhdCVIt1dS8uv14w1oHB2h3L8fEUuXQt7Y8ee8vCY/8d2/fx+3bt1Cz549zf/DK7//PcQnn0D2xBMQuheH7IGrWUT93HB0hPj4Yzg12AttL/VzpFevXhb9629z5sxps3Xdv38fjo6OmDhxYtPPUzvPl+6ope8v5hR6ixUEd3d32NraGn1yLyoqMvqEX8/Ly0sy3s7ODm5ubk3GNLZOAFAoFFAoFEbtcrm8RW/sLe3XpXl6Aj4+2uvGG7nuX15ZafwCl8m0bwweHk2e/K2trYVMJoONjU3LTrhGRwM//6w9IZmUpP2eQf0QBgwA1q4FFi+GzMXF/HW30IEDB6BWq/Xb1R3Y2NhAJpM1/xpo5/nSnZn7/mJOrMVmob29PUJCQox2f5RKJcLDwyX7hIWFGcWnp6dj9OjR+o1uLKaxdVIbkcmANWta1nft2o55cffurX2s69eB4mLtp8ziYu3y2rVABxYDq9cV5osVsujHktjYWLz77rvYv38/rl69ig0bNiA/Px8rVqwAoD2Us2jRIn38ihUrcPPmTcTGxuLq1avYv38/9u3bh+eee04fs27dOqSnp2PHjh24du0aduzYgc8++4y/Kd8RFi8GnJwAUz/t2tho4x94jpsjGvk0aRaZTHtJav/+/OM4bcys56cD5guZx6IFYcGCBUhISMDWrVsxatQoZGVl4dSpU/ov1KhUKoPvJPj7++PUqVPIyMjAqFGjsG3bNiQlJWHu3Ln6mPDwcHz44Yc4cOAARowYgeTkZKSkpGDcuHEdvn1Wp3dvIDVV+wbb3ItcdwIXaWnafs2o3wM05wQZdbz658ekwxTtOF+oZSx+UnnlypVYuXKl5H3JyclGbZMmTdJfZteYefPmYd68eW0xPDJXVBRw8qT2G6VSb94PnMBFWhpg4glcW1tb9O7dW/+bPU5OThY9EdsW6urqUF1djfv373f5cwhCCFRUVKCoqAi9e/du+pLTB7XTfKGWsXhBoG4oKsrwBG5Bwa/3PXAC19xj9l5eXgCgLwpdnRAClZWVcHR07PLFrV7v3r31z5PJ2mm+kPlYEKh91J/AXbNG+yWiCxe0J3FbcXWITCaDt7c3PDw8usWX/zQaDbKysjBx4sRucVWaXC43fc+goXaYL2Q+FgRqXzLZr9eLu7q2yYvb1ta25W88nYitrS1qamrg4ODQLQpCm2iH+UKm69oHLomIqM2wIBAREQAWBCIi0uE5BAn1X64x98e+NBoNKioqoFareUz4AcyLNOZFGvMiraV5qX8fM+VLgywIEup/fdLX19fCIyEiahv37t2DSzOX7spEm/wWQPdSV1eHgoICs3+Fsv5XUm/dumXWr6R2d8yLNOZFGvMiraV5EULg3r178PHxafYLkNxDkGBjY9OqPybu7OzMiSyBeZHGvEhjXqS1JC/N7RnU40llIiICwIJAREQ6LAhtSKFQYPPmzZJ/bMeaMS/SmBdpzIu0jsgLTyoTEREA7iEQEZEOCwIREQFgQSAiIh0WBCIiAsCCYLa3334b/v7+cHBwQEhICM6fP99kfGZmJkJCQuDg4IABAwbgnXfe6aCRdixz8pKRkQGZTGZ0u3btWgeOuP1lZWVh1qxZ8PHxgUwmw7Fjx5rtYw3zxdy8WMN82b59O8aMGYNevXrBw8MDc+bMwXfffddsv7aeLywIZkhJScH69evx4osvIicnBxMmTEB0dDTy8/Ml4/Py8jBjxgxMmDABOTk5eOGFF7B27VqkpqZ28Mjbl7l5qffdd99BpVLpbwEBAR004o5RXl6OkSNHYteuXSbFW8t8MTcv9brzfMnMzMSqVatw4cIFKJVK1NTUIDIyEuXl5Y32aZf5IshkY8eOFStWrDBoCwwMFJs2bZKM37hxowgMDDRoe/bZZ0VoaGi7jdESzM3LuXPnBABx586dDhhd5wBAHD16tMkYa5kvDzIlL9Y4X4qKigQAkZmZ2WhMe8wX7iGYqLq6GpcvX0ZkZKRBe2RkJL744gvJPtnZ2UbxUVFRuHTpUrf4m8BAy/JSLzg4GN7e3pg6dSrOnTvXnsPsEqxhvrSGNc2X0tJSAIBr/Z8TldAe84UFwUTFxcWora2Fp6enQbunpycKCwsl+xQWFkrG19TUoLi4uN3G2pFakhdvb2/s3bsXqampSEtLw+DBgzF16lRkZWV1xJA7LWuYLy1hbfNFCIHY2Fg88sgjGDZsWKNx7TFf+GunZmr4c9hCiCZ/IlsqXqq9qzMnL4MHD8bgwYP1y2FhYbh16xZef/11TJw4sV3H2dlZy3wxh7XNl9WrV+Prr7/G559/3mxsW88X7iGYyN3dHba2tkafeouKioyqdD0vLy/JeDs7O7i5ubXbWDtSS/IiJTQ0FNevX2/r4XUp1jBf2kp3nS9r1qzBiRMncO7cuWZ/gr895gsLgons7e0REhICpVJp0K5UKhEeHi7ZJywszCg+PT0do0eP7jZ/GrAleZGSk5MDb2/vth5el2IN86WtdLf5IoTA6tWrkZaWhrNnz8Lf37/ZPu0yX1p8OtoKffjhh0Iul4t9+/aJb7/9Vqxfv1706NFD/PTTT0IIITZt2iRiYmL08Tdu3BBOTk5iw4YN4ttvvxX79u0TcrlcfPzxx5bahHZhbl527twpjh49Kr7//nvxzTffiE2bNgkAIjU11VKb0C7u3bsncnJyRE5OjgAg3nzzTZGTkyNu3rwphLDe+WJuXqxhvvzxj38ULi4uIiMjQ6hUKv2toqJCH9MR84UFwUy7d+8Wfn5+wt7eXjz88MMGl4UtXrxYTJo0ySA+IyNDBAcHC3t7e9G/f3+xZ8+eDh5xxzAnLzt27BADBw4UDg4O4je/+Y145JFHxMmTJy0w6vZVf7lkw9vixYuFENY7X8zNizXMF6l8ABAHDhzQx3TEfOHPXxMREQCeQyAiIh0WBCIiAsCCQEREOiwIREQEgAWBiIh0WBCIiAgACwIREemwIBAREQAWBCIi0mFBIOpAtbW1CA8Px9y5cw3aS0tL4evri5deeslCIyMC+NMVRB3s+vXrGDVqFPbu3YunnnoKALBo0SJcuXIFFy9ehL29vYVHSNaKBYHIApKSkrBlyxZ88803uHjxIp544gn885//xKhRoyw9NLJiLAhEFiCEwO9+9zvY2triX//6F9asWcPDRWRxLAhEFnLt2jUMGTIEw4cPx1dffQU7O/5FW7IsnlQmspD9+/fDyckJeXl5+Pnnny09HCLuIRBZQnZ2NiZOnIjTp0/jL3/5C2pra/HZZ5+1+I+jE7UF7iEQdbDKykosXrwYzz77LKZNm4Z3330XFy9exF//+ldLD42sHAsCUQfbtGkT6urqsGPHDgBAv3798MYbb+BPf/oTfvrpJ8sOjqwaDxkRdaDMzExMnToVGRkZeOSRRwzui4qKQk1NDQ8dkcWwIBAREQAeMiIiIh0WBCIiAsCCQEREOiwIREQEgAWBiIh0WBCIiAgACwIREemwIBAREQAWBCIi0mFBICIiACwIRESk8/8BIEJqEGoZLkQAAAAASUVORK5CYII=",
+      "text/plain": [
+       "<Figure size 400x400 with 1 Axes>"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "site_map = {\n",
+    "    (0, 1): \"spin-1/2\",\n",
+    "    (0.5, 0): \"spin-1/2\",\n",
+    "    (0.5, 2): \"spin-1/2\",\n",
+    "    (1, 1): \"spin-1/2\",\n",
+    "    (1.5, 0): \"spin-1/2\",\n",
+    "    (1.5, 2): \"spin-1/2\",\n",
+    "    (2, 1): \"spin-1/2\"\n",
+    "}\n",
+    "\n",
+    "lattice = twodimensionalLattice(site_map)\n",
+    "\n",
+    "print(lattice)\n",
+    "lattice.plot_lattice()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 126,
+   "id": "69d4de25",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "[LocalOperator((0, 1), 'Sz'),\n",
+       " LocalOperator((0.5, 0), 'Sz'),\n",
+       " LocalOperator((0.5, 2), 'Sz'),\n",
+       " LocalOperator((1, 1), 'Sz'),\n",
+       " LocalOperator((1.5, 0), 'Sz'),\n",
+       " LocalOperator((1.5, 2), 'Sz'),\n",
+       " LocalOperator((2, 1), 'Sz')]"
+      ]
+     },
+     "execution_count": 126,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "Sz_ops=[LocalOperator(lattice.get_site(pos), \"Sz\") if lattice.get_site(pos).spin_type==0.5\n",
+    "        else LocalOperator(lattice.get_site(pos), \"Jz\")\n",
+    "        for pos in list(site_map.keys())]\n",
+    "\n",
+    "Sz_ops"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 127,
+   "id": "7ba08359",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "[(0, 1):Sz,\n",
+       " (0.5, 0):Sz,\n",
+       " (0.5, 2):Sz,\n",
+       " (1, 1):Sz,\n",
+       " (1.5, 0):Sz,\n",
+       " (1.5, 2):Sz,\n",
+       " (2, 1):Sz]"
+      ]
+     },
+     "execution_count": 127,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "\n",
+    "Product_Sz_ops = []\n",
+    "for pos in site_map.keys():\n",
+    "    site = lattice.get_site(pos)\n",
+    "    op_type = \"Sz\" if site.spin_type == 0.5 else \"Jz\"\n",
+    "    Product_Sz_ops.append(\n",
+    "        ProductOperator({site: LocalOperator(site, op_type)})\n",
+    "    )\n",
+    "\n",
+    "Product_Sz_ops"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 128,
+   "id": "97818cbc",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "1.0 * ((0, 1):Sz) + 1.0 * ((0.5, 0):Sz) + 1.0 * ((0.5, 2):Sz) + 1.0 * ((1, 1):Sz) + 1.0 * ((1.5, 0):Sz) + 1.0 * ((1.5, 2):Sz) + 1.0 * ((2, 1):Sz)\n"
+     ]
+    },
+    {
+     "data": {
+      "text/latex": [
+       "Quantum object: dims = [[2, 2, 2, 2, 2, 2, 2], [2, 2, 2, 2, 2, 2, 2]], shape = (128, 128), type = oper, isherm = True $ \\\\ \\left(\\begin{matrix}7.0 & 0.0 & 0.0 & 0.0 & 0.0 & \\cdots & 0.0 & 0.0 & 0.0 & 0.0 & 0.0\\\\0.0 & 5.0 & 0.0 & 0.0 & 0.0 & \\cdots & 0.0 & 0.0 & 0.0 & 0.0 & 0.0\\\\0.0 & 0.0 & 5.0 & 0.0 & 0.0 & \\cdots & 0.0 & 0.0 & 0.0 & 0.0 & 0.0\\\\0.0 & 0.0 & 0.0 & 3.0 & 0.0 & \\cdots & 0.0 & 0.0 & 0.0 & 0.0 & 0.0\\\\0.0 & 0.0 & 0.0 & 0.0 & 5.0 & \\cdots & 0.0 & 0.0 & 0.0 & 0.0 & 0.0\\\\\\vdots & \\vdots & \\vdots & \\vdots & \\vdots & \\ddots & \\vdots & \\vdots & \\vdots & \\vdots & \\vdots\\\\0.0 & 0.0 & 0.0 & 0.0 & 0.0 & \\cdots & -5.0 & 0.0 & 0.0 & 0.0 & 0.0\\\\0.0 & 0.0 & 0.0 & 0.0 & 0.0 & \\cdots & 0.0 & -3.0 & 0.0 & 0.0 & 0.0\\\\0.0 & 0.0 & 0.0 & 0.0 & 0.0 & \\cdots & 0.0 & 0.0 & -5.0 & 0.0 & 0.0\\\\0.0 & 0.0 & 0.0 & 0.0 & 0.0 & \\cdots & 0.0 & 0.0 & 0.0 & -5.0 & 0.0\\\\0.0 & 0.0 & 0.0 & 0.0 & 0.0 & \\cdots & 0.0 & 0.0 & 0.0 & 0.0 & -7.0\\\\\\end{matrix}\\right)$"
+      ],
+      "text/plain": [
+       "Quantum object: dims = [[2, 2, 2, 2, 2, 2, 2], [2, 2, 2, 2, 2, 2, 2]], shape = (128, 128), type = oper, isherm = True\n",
+       "Qobj data =\n",
+       "[[ 7.  0.  0. ...  0.  0.  0.]\n",
+       " [ 0.  5.  0. ...  0.  0.  0.]\n",
+       " [ 0.  0.  5. ...  0.  0.  0.]\n",
+       " ...\n",
+       " [ 0.  0.  0. ... -5.  0.  0.]\n",
+       " [ 0.  0.  0. ...  0. -5.  0.]\n",
+       " [ 0.  0.  0. ...  0.  0. -7.]]"
+      ]
+     },
+     "execution_count": 128,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "\n",
+    "Mz = SumOperator(Product_Sz_ops)\n",
+    "print(Mz)\n",
+    "Mz.tensorized_to_qobj(lattice.sites.values())\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "8e7f8f8c",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "e97d45a4",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "9d52532c",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "4d61dd37",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 80,
+   "id": "227a9a00",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "dict_keys([(0, 1), (0.5, 0), (0.5, 2), (1, 1), (1.5, 0), (1.5, 2), (2, 1)])"
+      ]
+     },
+     "execution_count": 80,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "site_map.keys()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 73,
+   "id": "bab4a369",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "[(0, 1), (0.5, 0), (0.5, 2), (1, 1), (1.5, 0), (1.5, 2), (2, 1)]"
+      ]
+     },
+     "execution_count": 73,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "list(site_map.keys())"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 114,
+   "id": "f2fffa85",
+   "metadata": {
+    "scrolled": false
+   },
+   "outputs": [],
+   "source": [
+    "Sz_ops=[LocalOperator(lattice.get_site(pos), \"Sz\") if lattice.get_site(pos).spin_type==0.5\n",
+    "        else LocalOperator(lattice.get_site(pos), \"Jz\")\n",
+    "        for pos in list(site_map.keys())]\n",
+    "\n",
+    "Product_Sz_ops = []\n",
+    "for pos in site_map.keys():\n",
+    "    site = lattice.get_site(pos)\n",
+    "    op_type = \"Sz\" if site.spin_type == 0.5 else \"Jz\"\n",
+    "    Product_Sz_ops.append(\n",
+    "        ProductOperator({site: LocalOperator(site, op_type)})\n",
+    "    )\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 118,
+   "id": "d300b6d2",
+   "metadata": {},
+   "outputs": [
+    {
+     "ename": "AttributeError",
+     "evalue": "'tuple' object has no attribute 'get_operator'",
+     "output_type": "error",
+     "traceback": [
+      "\u001b[0;31m---------------------------------------------------------------------------\u001b[0m",
+      "\u001b[0;31mAttributeError\u001b[0m                            Traceback (most recent call last)",
+      "Cell \u001b[0;32mIn[118], line 2\u001b[0m\n\u001b[1;32m      1\u001b[0m Mz \u001b[38;5;241m=\u001b[39m SumOperator(Product_Sz_ops)\n\u001b[0;32m----> 2\u001b[0m \u001b[43mMz\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mtensorized_to_qobj\u001b[49m\u001b[43m(\u001b[49m\u001b[43mlattice\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43msites\u001b[49m\u001b[43m)\u001b[49m\n",
+      "Cell \u001b[0;32mIn[34], line 116\u001b[0m, in \u001b[0;36mSumOperator.tensorized_to_qobj\u001b[0;34m(self, all_sites)\u001b[0m\n\u001b[1;32m    115\u001b[0m \u001b[38;5;28;01mdef\u001b[39;00m \u001b[38;5;21mtensorized_to_qobj\u001b[39m(\u001b[38;5;28mself\u001b[39m, all_sites):\n\u001b[0;32m--> 116\u001b[0m     \u001b[38;5;28;01mreturn\u001b[39;00m \u001b[38;5;28;43msum\u001b[39;49m\u001b[43m(\u001b[49m\u001b[43mcoeff\u001b[49m\u001b[43m \u001b[49m\u001b[38;5;241;43m*\u001b[39;49m\u001b[43m \u001b[49m\u001b[43mterm\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mtensorized_to_qobj\u001b[49m\u001b[43m(\u001b[49m\u001b[43mall_sites\u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m    117\u001b[0m \u001b[43m               \u001b[49m\u001b[38;5;28;43;01mfor\u001b[39;49;00m\u001b[43m \u001b[49m\u001b[43mcoeff\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mterm\u001b[49m\u001b[43m \u001b[49m\u001b[38;5;129;43;01min\u001b[39;49;00m\u001b[43m \u001b[49m\u001b[38;5;28;43mzip\u001b[39;49m\u001b[43m(\u001b[49m\u001b[38;5;28;43mself\u001b[39;49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mcoeffs\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[38;5;28;43mself\u001b[39;49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mterms\u001b[49m\u001b[43m)\u001b[49m\u001b[43m)\u001b[49m\n",
+      "Cell \u001b[0;32mIn[34], line 116\u001b[0m, in \u001b[0;36m<genexpr>\u001b[0;34m(.0)\u001b[0m\n\u001b[1;32m    115\u001b[0m \u001b[38;5;28;01mdef\u001b[39;00m \u001b[38;5;21mtensorized_to_qobj\u001b[39m(\u001b[38;5;28mself\u001b[39m, all_sites):\n\u001b[0;32m--> 116\u001b[0m     \u001b[38;5;28;01mreturn\u001b[39;00m \u001b[38;5;28msum\u001b[39m(coeff \u001b[38;5;241m*\u001b[39m \u001b[43mterm\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mtensorized_to_qobj\u001b[49m\u001b[43m(\u001b[49m\u001b[43mall_sites\u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m    117\u001b[0m                \u001b[38;5;28;01mfor\u001b[39;00m coeff, term \u001b[38;5;129;01min\u001b[39;00m \u001b[38;5;28mzip\u001b[39m(\u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39mcoeffs, \u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39mterms))\n",
+      "Cell \u001b[0;32mIn[34], line 77\u001b[0m, in \u001b[0;36mProductOperator.tensorized_to_qobj\u001b[0;34m(self, all_sites)\u001b[0m\n\u001b[1;32m     75\u001b[0m         ops\u001b[38;5;241m.\u001b[39mappend(\u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39mop_map[site]\u001b[38;5;241m.\u001b[39mto_qobj())\n\u001b[1;32m     76\u001b[0m     \u001b[38;5;28;01melse\u001b[39;00m:\n\u001b[0;32m---> 77\u001b[0m         dim \u001b[38;5;241m=\u001b[39m \u001b[43msite\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mget_operator\u001b[49m(\u001b[38;5;124m\"\u001b[39m\u001b[38;5;124mid2\u001b[39m\u001b[38;5;124m\"\u001b[39m \u001b[38;5;28;01mif\u001b[39;00m site\u001b[38;5;241m.\u001b[39mspin_type \u001b[38;5;241m==\u001b[39m \u001b[38;5;241m0.5\u001b[39m \u001b[38;5;28;01melse\u001b[39;00m \u001b[38;5;124m\"\u001b[39m\u001b[38;5;124mid3\u001b[39m\u001b[38;5;124m\"\u001b[39m)\u001b[38;5;241m.\u001b[39mshape[\u001b[38;5;241m0\u001b[39m]\n\u001b[1;32m     78\u001b[0m         ops\u001b[38;5;241m.\u001b[39mappend(qutip\u001b[38;5;241m.\u001b[39mqeye(dim))\n\u001b[1;32m     79\u001b[0m \u001b[38;5;28;01mreturn\u001b[39;00m qutip\u001b[38;5;241m.\u001b[39mtensor(ops)\n",
+      "\u001b[0;31mAttributeError\u001b[0m: 'tuple' object has no attribute 'get_operator'"
+     ]
+    }
+   ],
+   "source": [
+    "Mz = SumOperator(Product_Sz_ops)\n",
+    "Mz.tensorized_to_qobj(lattice.sites)\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 117,
+   "id": "583f0ec3",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "{(0, 1): 'spin-1/2',\n",
+       " (0.5, 0): 'spin-1/2',\n",
+       " (0.5, 2): 'spin-1/2',\n",
+       " (1, 1): 'spin-1/2',\n",
+       " (1.5, 0): 'spin-1/2',\n",
+       " (1.5, 2): 'spin-1/2',\n",
+       " (2, 1): 'spin-1/2'}"
+      ]
+     },
+     "execution_count": 117,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "site_map"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 102,
+   "id": "112eed29",
+   "metadata": {},
+   "outputs": [
+    {
+     "ename": "AttributeError",
+     "evalue": "'ProductOperator' object has no attribute 'to_qobj'",
+     "output_type": "error",
+     "traceback": [
+      "\u001b[0;31m---------------------------------------------------------------------------\u001b[0m",
+      "\u001b[0;31mAttributeError\u001b[0m                            Traceback (most recent call last)",
+      "Cell \u001b[0;32mIn[102], line 1\u001b[0m\n\u001b[0;32m----> 1\u001b[0m \u001b[43mProduct_Sz_ops\u001b[49m\u001b[43m[\u001b[49m\u001b[38;5;241;43m0\u001b[39;49m\u001b[43m]\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mto_qobj\u001b[49m\n",
+      "\u001b[0;31mAttributeError\u001b[0m: 'ProductOperator' object has no attribute 'to_qobj'"
+     ]
+    }
+   ],
+   "source": [
+    "Product_Sz_ops[0].to_qobj"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 93,
+   "id": "cde7248c",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "2"
+      ]
+     },
+     "execution_count": 93,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "list(site_map.keys()).index((0.5,2))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "635bb7b4",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "8e63f886",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 88,
+   "id": "e04b83a2",
+   "metadata": {},
+   "outputs": [
+    {
+     "ename": "AttributeError",
+     "evalue": "'str' object has no attribute 'op_type'",
+     "output_type": "error",
+     "traceback": [
+      "\u001b[0;31m---------------------------------------------------------------------------\u001b[0m",
+      "\u001b[0;31mAttributeError\u001b[0m                            Traceback (most recent call last)",
+      "File \u001b[0;32m/usr/lib/python3/dist-packages/IPython/core/formatters.py:708\u001b[0m, in \u001b[0;36mPlainTextFormatter.__call__\u001b[0;34m(self, obj)\u001b[0m\n\u001b[1;32m    701\u001b[0m stream \u001b[38;5;241m=\u001b[39m StringIO()\n\u001b[1;32m    702\u001b[0m printer \u001b[38;5;241m=\u001b[39m pretty\u001b[38;5;241m.\u001b[39mRepresentationPrinter(stream, \u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39mverbose,\n\u001b[1;32m    703\u001b[0m     \u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39mmax_width, \u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39mnewline,\n\u001b[1;32m    704\u001b[0m     max_seq_length\u001b[38;5;241m=\u001b[39m\u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39mmax_seq_length,\n\u001b[1;32m    705\u001b[0m     singleton_pprinters\u001b[38;5;241m=\u001b[39m\u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39msingleton_printers,\n\u001b[1;32m    706\u001b[0m     type_pprinters\u001b[38;5;241m=\u001b[39m\u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39mtype_printers,\n\u001b[1;32m    707\u001b[0m     deferred_pprinters\u001b[38;5;241m=\u001b[39m\u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39mdeferred_printers)\n\u001b[0;32m--> 708\u001b[0m \u001b[43mprinter\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mpretty\u001b[49m\u001b[43m(\u001b[49m\u001b[43mobj\u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m    709\u001b[0m printer\u001b[38;5;241m.\u001b[39mflush()\n\u001b[1;32m    710\u001b[0m \u001b[38;5;28;01mreturn\u001b[39;00m stream\u001b[38;5;241m.\u001b[39mgetvalue()\n",
+      "File \u001b[0;32m/usr/lib/python3/dist-packages/IPython/lib/pretty.py:393\u001b[0m, in \u001b[0;36mRepresentationPrinter.pretty\u001b[0;34m(self, obj)\u001b[0m\n\u001b[1;32m    390\u001b[0m \u001b[38;5;28;01mfor\u001b[39;00m \u001b[38;5;28mcls\u001b[39m \u001b[38;5;129;01min\u001b[39;00m _get_mro(obj_class):\n\u001b[1;32m    391\u001b[0m     \u001b[38;5;28;01mif\u001b[39;00m \u001b[38;5;28mcls\u001b[39m \u001b[38;5;129;01min\u001b[39;00m \u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39mtype_pprinters:\n\u001b[1;32m    392\u001b[0m         \u001b[38;5;66;03m# printer registered in self.type_pprinters\u001b[39;00m\n\u001b[0;32m--> 393\u001b[0m         \u001b[38;5;28;01mreturn\u001b[39;00m \u001b[38;5;28;43mself\u001b[39;49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mtype_pprinters\u001b[49m\u001b[43m[\u001b[49m\u001b[38;5;28;43mcls\u001b[39;49m\u001b[43m]\u001b[49m\u001b[43m(\u001b[49m\u001b[43mobj\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[38;5;28;43mself\u001b[39;49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mcycle\u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m    394\u001b[0m     \u001b[38;5;28;01melse\u001b[39;00m:\n\u001b[1;32m    395\u001b[0m         \u001b[38;5;66;03m# deferred printer\u001b[39;00m\n\u001b[1;32m    396\u001b[0m         printer \u001b[38;5;241m=\u001b[39m \u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39m_in_deferred_types(\u001b[38;5;28mcls\u001b[39m)\n",
+      "File \u001b[0;32m/usr/lib/python3/dist-packages/IPython/lib/pretty.py:640\u001b[0m, in \u001b[0;36m_seq_pprinter_factory.<locals>.inner\u001b[0;34m(obj, p, cycle)\u001b[0m\n\u001b[1;32m    638\u001b[0m         p\u001b[38;5;241m.\u001b[39mtext(\u001b[38;5;124m'\u001b[39m\u001b[38;5;124m,\u001b[39m\u001b[38;5;124m'\u001b[39m)\n\u001b[1;32m    639\u001b[0m         p\u001b[38;5;241m.\u001b[39mbreakable()\n\u001b[0;32m--> 640\u001b[0m     \u001b[43mp\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mpretty\u001b[49m\u001b[43m(\u001b[49m\u001b[43mx\u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m    641\u001b[0m \u001b[38;5;28;01mif\u001b[39;00m \u001b[38;5;28mlen\u001b[39m(obj) \u001b[38;5;241m==\u001b[39m \u001b[38;5;241m1\u001b[39m \u001b[38;5;129;01mand\u001b[39;00m \u001b[38;5;28misinstance\u001b[39m(obj, \u001b[38;5;28mtuple\u001b[39m):\n\u001b[1;32m    642\u001b[0m     \u001b[38;5;66;03m# Special case for 1-item tuples.\u001b[39;00m\n\u001b[1;32m    643\u001b[0m     p\u001b[38;5;241m.\u001b[39mtext(\u001b[38;5;124m'\u001b[39m\u001b[38;5;124m,\u001b[39m\u001b[38;5;124m'\u001b[39m)\n",
+      "File \u001b[0;32m/usr/lib/python3/dist-packages/IPython/lib/pretty.py:410\u001b[0m, in \u001b[0;36mRepresentationPrinter.pretty\u001b[0;34m(self, obj)\u001b[0m\n\u001b[1;32m    407\u001b[0m                         \u001b[38;5;28;01mreturn\u001b[39;00m meth(obj, \u001b[38;5;28mself\u001b[39m, cycle)\n\u001b[1;32m    408\u001b[0m                 \u001b[38;5;28;01mif\u001b[39;00m \u001b[38;5;28mcls\u001b[39m \u001b[38;5;129;01mis\u001b[39;00m \u001b[38;5;129;01mnot\u001b[39;00m \u001b[38;5;28mobject\u001b[39m \\\n\u001b[1;32m    409\u001b[0m                         \u001b[38;5;129;01mand\u001b[39;00m \u001b[38;5;28mcallable\u001b[39m(\u001b[38;5;28mcls\u001b[39m\u001b[38;5;241m.\u001b[39m\u001b[38;5;18m__dict__\u001b[39m\u001b[38;5;241m.\u001b[39mget(\u001b[38;5;124m'\u001b[39m\u001b[38;5;124m__repr__\u001b[39m\u001b[38;5;124m'\u001b[39m)):\n\u001b[0;32m--> 410\u001b[0m                     \u001b[38;5;28;01mreturn\u001b[39;00m \u001b[43m_repr_pprint\u001b[49m\u001b[43m(\u001b[49m\u001b[43mobj\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[38;5;28;43mself\u001b[39;49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mcycle\u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m    412\u001b[0m     \u001b[38;5;28;01mreturn\u001b[39;00m _default_pprint(obj, \u001b[38;5;28mself\u001b[39m, cycle)\n\u001b[1;32m    413\u001b[0m \u001b[38;5;28;01mfinally\u001b[39;00m:\n",
+      "File \u001b[0;32m/usr/lib/python3/dist-packages/IPython/lib/pretty.py:778\u001b[0m, in \u001b[0;36m_repr_pprint\u001b[0;34m(obj, p, cycle)\u001b[0m\n\u001b[1;32m    776\u001b[0m \u001b[38;5;250m\u001b[39m\u001b[38;5;124;03m\"\"\"A pprint that just redirects to the normal repr function.\"\"\"\u001b[39;00m\n\u001b[1;32m    777\u001b[0m \u001b[38;5;66;03m# Find newlines and replace them with p.break_()\u001b[39;00m\n\u001b[0;32m--> 778\u001b[0m output \u001b[38;5;241m=\u001b[39m \u001b[38;5;28;43mrepr\u001b[39;49m\u001b[43m(\u001b[49m\u001b[43mobj\u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m    779\u001b[0m lines \u001b[38;5;241m=\u001b[39m output\u001b[38;5;241m.\u001b[39msplitlines()\n\u001b[1;32m    780\u001b[0m \u001b[38;5;28;01mwith\u001b[39;00m p\u001b[38;5;241m.\u001b[39mgroup():\n",
+      "Cell \u001b[0;32mIn[34], line 82\u001b[0m, in \u001b[0;36mProductOperator.__repr__\u001b[0;34m(self)\u001b[0m\n\u001b[1;32m     81\u001b[0m \u001b[38;5;28;01mdef\u001b[39;00m \u001b[38;5;21m__repr__\u001b[39m(\u001b[38;5;28mself\u001b[39m):\n\u001b[0;32m---> 82\u001b[0m     \u001b[38;5;28;01mreturn\u001b[39;00m \u001b[38;5;124m\"\u001b[39m\u001b[38;5;124m * \u001b[39m\u001b[38;5;124m\"\u001b[39m\u001b[38;5;241m.\u001b[39mjoin([\u001b[38;5;124mf\u001b[39m\u001b[38;5;124m\"\u001b[39m\u001b[38;5;132;01m{\u001b[39;00msite\u001b[38;5;241m.\u001b[39mposition\u001b[38;5;132;01m}\u001b[39;00m\u001b[38;5;124m:\u001b[39m\u001b[38;5;132;01m{\u001b[39;00m\u001b[43mop\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mop_type\u001b[49m\u001b[38;5;132;01m}\u001b[39;00m\u001b[38;5;124m\"\u001b[39m \u001b[38;5;28;01mfor\u001b[39;00m site, op \u001b[38;5;129;01min\u001b[39;00m \u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39mop_map\u001b[38;5;241m.\u001b[39mitems()])\n",
+      "\u001b[0;31mAttributeError\u001b[0m: 'str' object has no attribute 'op_type'"
+     ]
+    }
+   ],
+   "source": [
+    "Product_Sz_ops"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "108c2eb2",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "\n",
+    "                if lattice.get_site(pos).spin_type==0.5\n",
+    "                else ProductOperator({SpinOneSite(lattice.get_site(pos)): \"Jz\"}"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 79,
+   "id": "4dc5abb9",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "[LocalOperator((0, 1), 'Sz'),\n",
+       " LocalOperator((0.5, 0), 'Sz'),\n",
+       " LocalOperator((0.5, 2), 'Sz'),\n",
+       " LocalOperator((1, 1), 'Sz'),\n",
+       " LocalOperator((1.5, 0), 'Sz'),\n",
+       " LocalOperator((1.5, 2), 'Sz'),\n",
+       " LocalOperator((2, 1), 'Sz')]"
+      ]
+     },
+     "execution_count": 79,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "Sz_ops"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 77,
+   "id": "7960bd82",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "SpinHalfSite(position=(0, 1), spin=0.5)"
+      ]
+     },
+     "execution_count": 77,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "lattice.get_site((0,1))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 65,
+   "id": "c84c6090",
+   "metadata": {},
+   "outputs": [
+    {
+     "ename": "AttributeError",
+     "evalue": "'tuple' object has no attribute 'spin_type'",
+     "output_type": "error",
+     "traceback": [
+      "\u001b[0;31m---------------------------------------------------------------------------\u001b[0m",
+      "\u001b[0;31mAttributeError\u001b[0m                            Traceback (most recent call last)",
+      "Cell \u001b[0;32mIn[65], line 1\u001b[0m\n\u001b[0;32m----> 1\u001b[0m Iz \u001b[38;5;241m=\u001b[39m \u001b[38;5;28;43msum\u001b[39;49m\u001b[43m(\u001b[49m\n\u001b[1;32m      2\u001b[0m \u001b[43m    \u001b[49m\u001b[43mlattice\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mget_site\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mget_operator\u001b[49m\u001b[43m(\u001b[49m\u001b[38;5;124;43m\"\u001b[39;49m\u001b[38;5;124;43mSz\u001b[39;49m\u001b[38;5;124;43m\"\u001b[39;49m\u001b[43m)\u001b[49m\u001b[43m \u001b[49m\u001b[38;5;28;43;01mif\u001b[39;49;00m\u001b[43m \u001b[49m\u001b[43msite\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mspin_type\u001b[49m\u001b[43m \u001b[49m\u001b[38;5;241;43m==\u001b[39;49m\u001b[43m \u001b[49m\u001b[38;5;241;43m0.5\u001b[39;49m\n\u001b[1;32m      3\u001b[0m \u001b[43m    \u001b[49m\u001b[38;5;28;43;01melse\u001b[39;49;00m\u001b[43m \u001b[49m\u001b[43mlattice\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43msite\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mget_operator\u001b[49m\u001b[43m(\u001b[49m\u001b[38;5;124;43m\"\u001b[39;49m\u001b[38;5;124;43mJz\u001b[39;49m\u001b[38;5;124;43m\"\u001b[39;49m\u001b[43m)\u001b[49m\n\u001b[1;32m      4\u001b[0m \u001b[43m    \u001b[49m\u001b[38;5;28;43;01mfor\u001b[39;49;00m\u001b[43m \u001b[49m\u001b[43msite\u001b[49m\u001b[43m \u001b[49m\u001b[38;5;129;43;01min\u001b[39;49;00m\u001b[43m \u001b[49m\u001b[43msite_map\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mkeys\u001b[49m\u001b[43m(\u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m      5\u001b[0m \u001b[43m)\u001b[49m\n",
+      "Cell \u001b[0;32mIn[65], line 2\u001b[0m, in \u001b[0;36m<genexpr>\u001b[0;34m(.0)\u001b[0m\n\u001b[1;32m      1\u001b[0m Iz \u001b[38;5;241m=\u001b[39m \u001b[38;5;28msum\u001b[39m(\n\u001b[0;32m----> 2\u001b[0m     lattice\u001b[38;5;241m.\u001b[39mget_site\u001b[38;5;241m.\u001b[39mget_operator(\u001b[38;5;124m\"\u001b[39m\u001b[38;5;124mSz\u001b[39m\u001b[38;5;124m\"\u001b[39m) \u001b[38;5;28;01mif\u001b[39;00m \u001b[43msite\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mspin_type\u001b[49m \u001b[38;5;241m==\u001b[39m \u001b[38;5;241m0.5\u001b[39m\n\u001b[1;32m      3\u001b[0m     \u001b[38;5;28;01melse\u001b[39;00m lattice\u001b[38;5;241m.\u001b[39msite\u001b[38;5;241m.\u001b[39mget_operator(\u001b[38;5;124m\"\u001b[39m\u001b[38;5;124mJz\u001b[39m\u001b[38;5;124m\"\u001b[39m)\n\u001b[1;32m      4\u001b[0m     \u001b[38;5;28;01mfor\u001b[39;00m site \u001b[38;5;129;01min\u001b[39;00m site_map\u001b[38;5;241m.\u001b[39mkeys()\n\u001b[1;32m      5\u001b[0m )\n",
+      "\u001b[0;31mAttributeError\u001b[0m: 'tuple' object has no attribute 'spin_type'"
+     ]
+    }
+   ],
+   "source": [
+    "Iz = SumOperator([\n",
+    "                    ProductOperator(LocalOperator(sitei, \"Sz\"))\n",
+    "    for sitei in lattice.get_site()\n",
+    "                 ])"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "ba3bf06a",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "4c827c3f",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 66,
+   "id": "fe4ea746",
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/latex": [
+       "Quantum object: dims = [[2], [2]], shape = (2, 2), type = oper, isherm = True $ \\\\ \\left(\\begin{matrix}7.0 & 0.0\\\\0.0 & -7.0\\\\\\end{matrix}\\right)$"
+      ],
+      "text/plain": [
+       "Quantum object: dims = [[2], [2]], shape = (2, 2), type = oper, isherm = True\n",
+       "Qobj data =\n",
+       "[[ 7.  0.]\n",
+       " [ 0. -7.]]"
+      ]
+     },
+     "execution_count": 66,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "sum(lattice.get_site(pos).get_operator(\"Sz\") for pos in site_map.keys())"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "aabba45a",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "fdb52f99",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 45,
+   "id": "04db92d1",
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/latex": [
+       "Quantum object: dims = [[2], [2]], shape = (2, 2), type = oper, isherm = True $ \\\\ \\left(\\begin{matrix}1.0 & 0.0\\\\0.0 & -1.0\\\\\\end{matrix}\\right)$"
+      ],
+      "text/plain": [
+       "Quantum object: dims = [[2], [2]], shape = (2, 2), type = oper, isherm = True\n",
+       "Qobj data =\n",
+       "[[ 1.  0.]\n",
+       " [ 0. -1.]]"
+      ]
+     },
+     "execution_count": 45,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "lattice.get_site((0.5,0)).get_operator(\"Sz\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 49,
+   "id": "7a55b028",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "[(0, 1), (0.5, 0), (0.5, 2), (1, 1), (1.5, 0), (1.5, 2), (2, 1)]"
+      ]
+     },
+     "execution_count": 49,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "[site for site in site_map.keys()]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 53,
+   "id": "f71f6ca4",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "0.5"
+      ]
+     },
+     "execution_count": 53,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "lattice.get_site((0.5,0)).spin_type"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "4f922082",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "aebaa3a2",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "1ec30ce9",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 19,
+   "id": "e00f900e",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "sites = [SpinHalfSite((i,j)) for i in range(1) for j in range(2)]\n",
+    "\n",
+    "site00=sites[0]\n",
+    "site01=sites[1]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 24,
+   "id": "f71ebe56",
+   "metadata": {},
+   "outputs": [
+    {
+     "ename": "TypeError",
+     "evalue": "LocalOperator.__init__() takes 3 positional arguments but 4 were given",
+     "output_type": "error",
+     "traceback": [
+      "\u001b[0;31m---------------------------------------------------------------------------\u001b[0m",
+      "\u001b[0;31mTypeError\u001b[0m                                 Traceback (most recent call last)",
+      "Cell \u001b[0;32mIn[24], line 7\u001b[0m\n\u001b[1;32m      4\u001b[0m P1 \u001b[38;5;241m=\u001b[39m ProductOperator({site00: op1})\n\u001b[1;32m      5\u001b[0m P2 \u001b[38;5;241m=\u001b[39m ProductOperator({site01: op2})\n\u001b[0;32m----> 7\u001b[0m P12\u001b[38;5;241m=\u001b[39m\u001b[43mP1\u001b[49m\u001b[38;5;241;43m*\u001b[39;49m\u001b[43mP1\u001b[49m\n\u001b[1;32m      8\u001b[0m P12\u001b[38;5;241m.\u001b[39mtensorized_to_qobj(sites)\n",
+      "Cell \u001b[0;32mIn[18], line 49\u001b[0m, in \u001b[0;36mProductOperator.__mul__\u001b[0;34m(self, other)\u001b[0m\n\u001b[1;32m     46\u001b[0m \u001b[38;5;28;01mfor\u001b[39;00m site, op \u001b[38;5;129;01min\u001b[39;00m other\u001b[38;5;241m.\u001b[39mop_map\u001b[38;5;241m.\u001b[39mitems():\n\u001b[1;32m     47\u001b[0m     \u001b[38;5;28;01mif\u001b[39;00m site \u001b[38;5;129;01min\u001b[39;00m new_op_map:\n\u001b[1;32m     48\u001b[0m         \u001b[38;5;66;03m# Multiply local operators on same site\u001b[39;00m\n\u001b[0;32m---> 49\u001b[0m         combined_op \u001b[38;5;241m=\u001b[39m \u001b[43mLocalOperator\u001b[49m\u001b[43m(\u001b[49m\n\u001b[1;32m     50\u001b[0m \u001b[43m            \u001b[49m\u001b[43msite\u001b[49m\u001b[43m,\u001b[49m\n\u001b[1;32m     51\u001b[0m \u001b[43m            \u001b[49m\u001b[38;5;124;43m\"\u001b[39;49m\u001b[38;5;124;43mcustom\u001b[39;49m\u001b[38;5;124;43m\"\u001b[39;49m\u001b[43m,\u001b[49m\n\u001b[1;32m     52\u001b[0m \u001b[43m            \u001b[49m\u001b[43mnew_op_map\u001b[49m\u001b[43m[\u001b[49m\u001b[43msite\u001b[49m\u001b[43m]\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mto_qobj\u001b[49m\u001b[43m(\u001b[49m\u001b[43m)\u001b[49m\u001b[43m \u001b[49m\u001b[38;5;241;43m*\u001b[39;49m\u001b[43m \u001b[49m\u001b[43mop\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mto_qobj\u001b[49m\u001b[43m(\u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m     53\u001b[0m \u001b[43m        \u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m     54\u001b[0m         new_op_map[site] \u001b[38;5;241m=\u001b[39m combined_op\n\u001b[1;32m     55\u001b[0m     \u001b[38;5;28;01melse\u001b[39;00m:\n",
+      "\u001b[0;31mTypeError\u001b[0m: LocalOperator.__init__() takes 3 positional arguments but 4 were given"
+     ]
+    }
+   ],
+   "source": [
+    "op1 = LocalOperator(site00, \"Sx\")\n",
+    "op2 = LocalOperator(site01, \"Sz\")\n",
+    "\n",
+    "P1 = ProductOperator({site00: op1})\n",
+    "P2 = ProductOperator({site01: op2})\n",
+    "\n",
+    "P12=P1*P1\n",
+    "P12.tensorized_to_qobj(sites)\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 28,
+   "id": "0e1d3b75",
+   "metadata": {},
+   "outputs": [
+    {
+     "ename": "TypeError",
+     "evalue": "LocalOperator.__init__() takes 3 positional arguments but 4 were given",
+     "output_type": "error",
+     "traceback": [
+      "\u001b[0;31m---------------------------------------------------------------------------\u001b[0m",
+      "\u001b[0;31mTypeError\u001b[0m                                 Traceback (most recent call last)",
+      "Cell \u001b[0;32mIn[28], line 1\u001b[0m\n\u001b[0;32m----> 1\u001b[0m \u001b[43mP1\u001b[49m\u001b[38;5;241;43m*\u001b[39;49m\u001b[43mP1\u001b[49m\n",
+      "Cell \u001b[0;32mIn[18], line 49\u001b[0m, in \u001b[0;36mProductOperator.__mul__\u001b[0;34m(self, other)\u001b[0m\n\u001b[1;32m     46\u001b[0m \u001b[38;5;28;01mfor\u001b[39;00m site, op \u001b[38;5;129;01min\u001b[39;00m other\u001b[38;5;241m.\u001b[39mop_map\u001b[38;5;241m.\u001b[39mitems():\n\u001b[1;32m     47\u001b[0m     \u001b[38;5;28;01mif\u001b[39;00m site \u001b[38;5;129;01min\u001b[39;00m new_op_map:\n\u001b[1;32m     48\u001b[0m         \u001b[38;5;66;03m# Multiply local operators on same site\u001b[39;00m\n\u001b[0;32m---> 49\u001b[0m         combined_op \u001b[38;5;241m=\u001b[39m \u001b[43mLocalOperator\u001b[49m\u001b[43m(\u001b[49m\n\u001b[1;32m     50\u001b[0m \u001b[43m            \u001b[49m\u001b[43msite\u001b[49m\u001b[43m,\u001b[49m\n\u001b[1;32m     51\u001b[0m \u001b[43m            \u001b[49m\u001b[38;5;124;43m\"\u001b[39;49m\u001b[38;5;124;43mcustom\u001b[39;49m\u001b[38;5;124;43m\"\u001b[39;49m\u001b[43m,\u001b[49m\n\u001b[1;32m     52\u001b[0m \u001b[43m            \u001b[49m\u001b[43mnew_op_map\u001b[49m\u001b[43m[\u001b[49m\u001b[43msite\u001b[49m\u001b[43m]\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mto_qobj\u001b[49m\u001b[43m(\u001b[49m\u001b[43m)\u001b[49m\u001b[43m \u001b[49m\u001b[38;5;241;43m*\u001b[39;49m\u001b[43m \u001b[49m\u001b[43mop\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mto_qobj\u001b[49m\u001b[43m(\u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m     53\u001b[0m \u001b[43m        \u001b[49m\u001b[43m)\u001b[49m\n\u001b[1;32m     54\u001b[0m         new_op_map[site] \u001b[38;5;241m=\u001b[39m combined_op\n\u001b[1;32m     55\u001b[0m     \u001b[38;5;28;01melse\u001b[39;00m:\n",
+      "\u001b[0;31mTypeError\u001b[0m: LocalOperator.__init__() takes 3 positional arguments but 4 were given"
+     ]
+    }
+   ],
+   "source": [
+    "P1*P1"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 111,
+   "id": "e72c9e6e",
+   "metadata": {
+    "scrolled": false
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/latex": [
+       "Quantum object: dims = [[2, 2], [2, 2]], shape = (4, 4), type = oper, isherm = True $ \\\\ \\left(\\begin{matrix}0.0 & 0.0 & 1.0 & 0.0\\\\0.0 & 0.0 & 0.0 & 1.0\\\\1.0 & 0.0 & 0.0 & 0.0\\\\0.0 & 1.0 & 0.0 & 0.0\\\\\\end{matrix}\\right)$"
+      ],
+      "text/plain": [
+       "Quantum object: dims = [[2, 2], [2, 2]], shape = (4, 4), type = oper, isherm = True\n",
+       "Qobj data =\n",
+       "[[0. 0. 1. 0.]\n",
+       " [0. 0. 0. 1.]\n",
+       " [1. 0. 0. 0.]\n",
+       " [0. 1. 0. 0.]]"
+      ]
+     },
+     "execution_count": 111,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "op1.tensorized_to_qobj(sites)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 112,
+   "id": "f5b8de27",
+   "metadata": {},
+   "outputs": [
+    {
+     "ename": "AttributeError",
+     "evalue": "'SumOperator' object has no attribute 'tensorized_to_qobj'",
+     "output_type": "error",
+     "traceback": [
+      "\u001b[0;31m---------------------------------------------------------------------------\u001b[0m",
+      "\u001b[0;31mAttributeError\u001b[0m                            Traceback (most recent call last)",
+      "Cell \u001b[0;32mIn[112], line 1\u001b[0m\n\u001b[0;32m----> 1\u001b[0m \u001b[43m(\u001b[49m\u001b[43mH\u001b[49m\u001b[38;5;241;43m-\u001b[39;49m\u001b[43mH\u001b[49m\u001b[43m)\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mtensorized_to_qobj\u001b[49m(sites)\n",
+      "\u001b[0;31mAttributeError\u001b[0m: 'SumOperator' object has no attribute 'tensorized_to_qobj'"
+     ]
+    }
+   ],
+   "source": [
+    "(H-H).tensorized_to_qobj(sites)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 113,
+   "id": "e1c2af61",
+   "metadata": {},
+   "outputs": [
+    {
+     "ename": "AttributeError",
+     "evalue": "'SumOperator' object has no attribute 'tensorized_to_qobj'",
+     "output_type": "error",
+     "traceback": [
+      "\u001b[0;31m---------------------------------------------------------------------------\u001b[0m",
+      "\u001b[0;31mAttributeError\u001b[0m                            Traceback (most recent call last)",
+      "Cell \u001b[0;32mIn[113], line 1\u001b[0m\n\u001b[0;32m----> 1\u001b[0m \u001b[43m(\u001b[49m\u001b[43mop1\u001b[49m\u001b[38;5;241;43m-\u001b[39;49m\u001b[43mop1\u001b[49m\u001b[43m)\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mtensorized_to_qobj\u001b[49m(sites)\n",
+      "\u001b[0;31mAttributeError\u001b[0m: 'SumOperator' object has no attribute 'tensorized_to_qobj'"
+     ]
+    }
+   ],
+   "source": [
+    "(op1-op1).tensorized_to_qobj(sites)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 114,
+   "id": "9b09ef9c",
+   "metadata": {},
+   "outputs": [
+    {
+     "ename": "AttributeError",
+     "evalue": "'SumOperator' object has no attribute 'tensorized_to_qobj'",
+     "output_type": "error",
+     "traceback": [
+      "\u001b[0;31m---------------------------------------------------------------------------\u001b[0m",
+      "\u001b[0;31mAttributeError\u001b[0m                            Traceback (most recent call last)",
+      "Cell \u001b[0;32mIn[114], line 1\u001b[0m\n\u001b[0;32m----> 1\u001b[0m \u001b[43mH\u001b[49m\u001b[38;5;241;43m.\u001b[39;49m\u001b[43mtensorized_to_qobj\u001b[49m(sites)\u001b[38;5;241m-\u001b[39mH\u001b[38;5;241m.\u001b[39mtensorized_to_qobj(sites)\n",
+      "\u001b[0;31mAttributeError\u001b[0m: 'SumOperator' object has no attribute 'tensorized_to_qobj'"
+     ]
+    }
+   ],
+   "source": [
+    "H.tensorized_to_qobj(sites)-H.tensorized_to_qobj(sites)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 91,
+   "id": "ca6f4b98",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/latex": [
+       "Quantum object: dims = [[2, 2], [2, 2]], shape = (4, 4), type = oper, isherm = True $ \\\\ \\left(\\begin{matrix}0.0 & 0.0 & 3.0 & 0.0\\\\0.0 & 0.0 & 0.0 & -1.0\\\\3.0 & 0.0 & 0.0 & 0.0\\\\0.0 & -1.0 & 0.0 & 0.0\\\\\\end{matrix}\\right)$"
+      ],
+      "text/plain": [
+       "Quantum object: dims = [[2, 2], [2, 2]], shape = (4, 4), type = oper, isherm = True\n",
+       "Qobj data =\n",
+       "[[ 0.  0.  3.  0.]\n",
+       " [ 0.  0.  0. -1.]\n",
+       " [ 3.  0.  0.  0.]\n",
+       " [ 0. -1.  0.  0.]]"
+      ]
+     },
+     "execution_count": 91,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "(H-H).tensorized_to_qobj(sites)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "324f2436",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 41,
+   "id": "99b32d55",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "[(0, 1), (0.5, 0), (0.5, 2)]"
+      ]
+     },
+     "execution_count": 41,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "lattice.get_neighbors((1,1), distance=1.5)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 42,
+   "id": "735f3ce0",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def decompose_operator_to_terms(operator, lattice):\n",
+    "    \"\"\"\n",
+    "    Decompose an arbitrary operator into sums of tensor products of smaller qutip Qobjs.\n",
+    "    \n",
+    "    operator: A qutip.Qobj representing the Hamiltonian or any operator.\n",
+    "    lattice: An instance of twodimensionalLattice that contains the SpinSites.\n",
+    "    \n",
+    "    Returns a list of smaller qutip.Qobjs representing the decomposition.\n",
+    "    \"\"\"\n",
+    "    terms = []\n",
+    "    num_sites = len(lattice.sites)\n",
+    "    \n",
+    "    # We are assuming `operator` is already in the form of a qutip.Qobj.\n",
+    "    # The operator could be in the tensor product form already, or could be a sum of terms.\n",
+    "    \n",
+    "    # To simplify, we will first check if the operator is already a tensor product.\n",
+    "    if operator.dims[0] == operator.dims[1]:\n",
+    "        # Let's assume it's a sum of tensor products of operators.\n",
+    "        \n",
+    "        # Loop over each site and try to extract the local operators at that site\n",
+    "        for pos, site in lattice.sites.items():\n",
+    "            local_ops = site.operators  # This should be a dictionary with 'X', 'Y', 'Z' operators\n",
+    "\n",
+    "            for op_name, local_op in local_ops.items():\n",
+    "                # Generate the tensor product operator with the local operator at each site\n",
+    "                local_tensor = [qutip.qeye(2) for _ in range(num_sites)]  # Identity for all sites\n",
+    "                local_tensor[list(lattice.sites.keys()).index(pos)] = local_op  # Replace the identity at `pos`\n",
+    "                \n",
+    "                # Construct the tensor product and add it to terms\n",
+    "                tensor_op = qutip.tensor(local_tensor)\n",
+    "                terms.append(tensor_op)\n",
+    "    else:\n",
+    "        # The operator isn't directly in tensor form; we may need to handle a sum of operators\n",
+    "        pass  # You can add logic to handle non-tensorized operators\n",
+    "    \n",
+    "    return terms"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 50,
+   "id": "30a6ffa0",
+   "metadata": {
+    "scrolled": false
+   },
+   "outputs": [],
+   "source": [
+    "K0 = qutip.tensor(qutip.sigmax(), qutip.sigmaz(), qutip.sigmaz(), qutip.sigmax())\n",
+    "K0terms= decompose_operator_to_terms(K0, lattice)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 51,
+   "id": "15d19491",
+   "metadata": {
+    "scrolled": false
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "16"
+      ]
+     },
+     "execution_count": 51,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "len(K0terms)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 34,
+   "id": "5ced0f92",
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/latex": [
+       "Quantum object: dims = [[2, 2, 2], [2, 2, 2]], shape = (8, 8), type = oper, isherm = True $ \\\\ \\left(\\begin{matrix}0.0 & 0.0 & 0.0 & 0.0 & 1.0 & 0.0 & 0.0 & 0.0\\\\0.0 & 0.0 & 0.0 & 0.0 & 0.0 & 1.0 & 0.0 & 0.0\\\\0.0 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0 & 1.0 & 0.0\\\\0.0 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0 & 1.0\\\\1.0 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0\\\\0.0 & 1.0 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0\\\\0.0 & 0.0 & 1.0 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0\\\\0.0 & 0.0 & 0.0 & 1.0 & 0.0 & 0.0 & 0.0 & 0.0\\\\\\end{matrix}\\right)$"
+      ],
+      "text/plain": [
+       "Quantum object: dims = [[2, 2, 2], [2, 2, 2]], shape = (8, 8), type = oper, isherm = True\n",
+       "Qobj data =\n",
+       "[[0. 0. 0. 0. 1. 0. 0. 0.]\n",
+       " [0. 0. 0. 0. 0. 1. 0. 0.]\n",
+       " [0. 0. 0. 0. 0. 0. 1. 0.]\n",
+       " [0. 0. 0. 0. 0. 0. 0. 1.]\n",
+       " [1. 0. 0. 0. 0. 0. 0. 0.]\n",
+       " [0. 1. 0. 0. 0. 0. 0. 0.]\n",
+       " [0. 0. 1. 0. 0. 0. 0. 0.]\n",
+       " [0. 0. 0. 1. 0. 0. 0. 0.]]"
+      ]
+     },
+     "execution_count": 34,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "K0terms[0]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 35,
+   "id": "b0d126e2",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/latex": [
+       "Quantum object: dims = [[2, 2, 2], [2, 2, 2]], shape = (8, 8), type = oper, isherm = True $ \\\\ \\left(\\begin{matrix}0.0 & 0.0 & 0.0 & 0.0 & 1.0 & 0.0 & 0.0 & 0.0\\\\0.0 & 0.0 & 0.0 & 0.0 & 0.0 & -1.0 & 0.0 & 0.0\\\\0.0 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0 & -1.0 & 0.0\\\\0.0 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0 & 1.0\\\\1.0 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0\\\\0.0 & -1.0 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0\\\\0.0 & 0.0 & -1.0 & 0.0 & 0.0 & 0.0 & 0.0 & 0.0\\\\0.0 & 0.0 & 0.0 & 1.0 & 0.0 & 0.0 & 0.0 & 0.0\\\\\\end{matrix}\\right)$"
+      ],
+      "text/plain": [
+       "Quantum object: dims = [[2, 2, 2], [2, 2, 2]], shape = (8, 8), type = oper, isherm = True\n",
+       "Qobj data =\n",
+       "[[ 0.  0.  0.  0.  1.  0.  0.  0.]\n",
+       " [ 0.  0.  0.  0.  0. -1.  0.  0.]\n",
+       " [ 0.  0.  0.  0.  0.  0. -1.  0.]\n",
+       " [ 0.  0.  0.  0.  0.  0.  0.  1.]\n",
+       " [ 1.  0.  0.  0.  0.  0.  0.  0.]\n",
+       " [ 0. -1.  0.  0.  0.  0.  0.  0.]\n",
+       " [ 0.  0. -1.  0.  0.  0.  0.  0.]\n",
+       " [ 0.  0.  0.  1.  0.  0.  0.  0.]]"
+      ]
+     },
+     "execution_count": 35,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "K0"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "d2bdae30",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "37c5138e",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "6327be3a",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 52,
+   "id": "91caedb8",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "[1, 0.5, 1]"
+      ]
+     },
+     "execution_count": 52,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "dim_list"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 42,
+   "id": "5ed4524a",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/latex": [
+       "Quantum object: dims = [[3], [3]], shape = (3, 3), type = oper, isherm = True $ \\\\ \\left(\\begin{matrix}0.0 & 0.707 & 0.0\\\\0.707 & 0.0 & 0.707\\\\0.0 & 0.707 & 0.0\\\\\\end{matrix}\\right)$"
+      ],
+      "text/plain": [
+       "Quantum object: dims = [[3], [3]], shape = (3, 3), type = oper, isherm = True\n",
+       "Qobj data =\n",
+       "[[0.         0.70710678 0.        ]\n",
+       " [0.70710678 0.         0.70710678]\n",
+       " [0.         0.70710678 0.        ]]"
+      ]
+     },
+     "execution_count": 42,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "target_site.get_operator(\"Jx\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "d6911e45",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 13,
+   "id": "2640d28e",
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "SpinOneSite(position=(0, 0), spin=1)"
+      ]
+     },
+     "execution_count": 13,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "lattice.get_site((0,0))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "id": "989db0f1",
+   "metadata": {
+    "scrolled": false
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "{'Sx': Quantum object: dims = [[2], [2]], shape = (2, 2), type = oper, isherm = True\n",
+       " Qobj data =\n",
+       " [[0. 1.]\n",
+       "  [1. 0.]],\n",
+       " 'Sy': Quantum object: dims = [[2], [2]], shape = (2, 2), type = oper, isherm = True\n",
+       " Qobj data =\n",
+       " [[0.+0.j 0.-1.j]\n",
+       "  [0.+1.j 0.+0.j]],\n",
+       " 'Sz': Quantum object: dims = [[2], [2]], shape = (2, 2), type = oper, isherm = True\n",
+       " Qobj data =\n",
+       " [[ 1.  0.]\n",
+       "  [ 0. -1.]],\n",
+       " 'id2': Quantum object: dims = [[2], [2]], shape = (2, 2), type = oper, isherm = True\n",
+       " Qobj data =\n",
+       " [[1. 0.]\n",
+       "  [0. 1.]]}"
+      ]
+     },
+     "execution_count": 7,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "lattice.get_local_spin_ops((1,1))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "c5b4ad9e",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "4429970b",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 30,
+   "id": "6c223366",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "<__main__.twodimensionalLattice at 0x70e6013ec1a0>"
+      ]
+     },
+     "execution_count": 30,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "lattice"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 31,
+   "id": "2414d40b",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "{(0, 0): 'spin-1'}"
+      ]
+     },
+     "execution_count": 31,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "site_map"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 33,
+   "id": "599e685f",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "[(0, 0)]"
+      ]
+     },
+     "execution_count": 33,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "list(site_map.keys())"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "id": "becc32ec",
+   "metadata": {},
+   "outputs": [
+    {
+     "ename": "NameError",
+     "evalue": "name 'de' is not defined",
+     "output_type": "error",
+     "traceback": [
+      "\u001b[0;31m---------------------------------------------------------------------------\u001b[0m",
+      "\u001b[0;31mNameError\u001b[0m                                 Traceback (most recent call last)",
+      "Cell \u001b[0;32mIn[2], line 1\u001b[0m\n\u001b[0;32m----> 1\u001b[0m \u001b[38;5;28;43;01mclass\u001b[39;49;00m\u001b[43m \u001b[49m\u001b[38;5;21;43;01mLatticeOperators\u001b[39;49;00m\u001b[43m:\u001b[49m\n\u001b[1;32m      2\u001b[0m \u001b[43m    \u001b[49m\u001b[38;5;28;43;01mdef\u001b[39;49;00m\u001b[43m \u001b[49m\u001b[38;5;21;43m__init__\u001b[39;49m\u001b[43m(\u001b[49m\u001b[38;5;28;43mself\u001b[39;49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mLx\u001b[49m\u001b[43m,\u001b[49m\u001b[43m \u001b[49m\u001b[43mLy\u001b[49m\u001b[43m)\u001b[49m\u001b[43m:\u001b[49m\n\u001b[1;32m      3\u001b[0m \u001b[38;5;250;43m        \u001b[39;49m\u001b[38;5;124;43;03m\"\"\"\u001b[39;49;00m\n\u001b[1;32m      4\u001b[0m \u001b[38;5;124;43;03m        Initialize a 2D lattice of size Lx x Ly, storing operators at each site.\u001b[39;49;00m\n\u001b[1;32m      5\u001b[0m \u001b[38;5;124;43;03m        \"\"\"\u001b[39;49;00m\n",
+      "Cell \u001b[0;32mIn[2], line 11\u001b[0m, in \u001b[0;36mLatticeOperators\u001b[0;34m()\u001b[0m\n\u001b[1;32m      8\u001b[0m     \u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39moperators \u001b[38;5;241m=\u001b[39m {}  \u001b[38;5;66;03m# Dictionary to store operators per site\u001b[39;00m\n\u001b[1;32m      9\u001b[0m     \u001b[38;5;28mself\u001b[39m\u001b[38;5;241m.\u001b[39m_initialize_operators()\n\u001b[0;32m---> 11\u001b[0m \u001b[43mde\u001b[49m\n\u001b[1;32m     13\u001b[0m \u001b[38;5;28;01mdef\u001b[39;00m \u001b[38;5;21m_initialize_operators\u001b[39m(\u001b[38;5;28mself\u001b[39m):\n\u001b[1;32m     14\u001b[0m \u001b[38;5;250m    \u001b[39m\u001b[38;5;124;03m\"\"\"\u001b[39;00m\n\u001b[1;32m     15\u001b[0m \u001b[38;5;124;03m    Initialize the dictionary to store Pauli matrices at each lattice site.\u001b[39;00m\n\u001b[1;32m     16\u001b[0m \u001b[38;5;124;03m    \"\"\"\u001b[39;00m\n",
+      "\u001b[0;31mNameError\u001b[0m: name 'de' is not defined"
+     ]
+    }
+   ],
+   "source": [
+    "\n",
+    "class LatticeOperators:\n",
+    "    def __init__(self, Lx, Ly):\n",
+    "        \"\"\"\n",
+    "        Initialize a 2D lattice of size Lx x Ly, storing operators at each site.\n",
+    "        \"\"\"\n",
+    "        self.Lx = Lx\n",
+    "        self.Ly = Ly\n",
+    "        self.operators = {}  # Dictionary to store operators per site\n",
+    "        self._initialize_operators()\n",
+    "    \n",
+    "    de\n",
+    "    \n",
+    "    def _initialize_operators(self):\n",
+    "        \"\"\"\n",
+    "        Initialize the dictionary to store Pauli matrices at each lattice site.\n",
+    "        \"\"\"\n",
+    "        Sz = qutip.sigmaz()\n",
+    "        Sx = qutip.sigmax()        \n",
+    "        Sy = qutip.sigmay()\n",
+    "        \n",
+    "        for i in range(self.Lx):\n",
+    "            for j in range(self.Ly):\n",
+    "                self.operators[(i, j)] = {\"Sz\": Sz, \"Sx\": Sx, \"Sy\": Sy}\n",
+    "    \n",
+    "    def get_operator(self, site, op_type):\n",
+    "        \"\"\"\n",
+    "        Retrieve an operator of type op_type (\"Sz\", \"Sx\", \"Sy\") at a given site (i, j).\n",
+    "        \"\"\"\n",
+    "        return self.operators.get(site, {}).get(op_type, None)\n",
+    "    \n",
+    "    def get_neighbors(self, site):\n",
+    "        \"\"\"\n",
+    "        Get nearest neighbors of a given site in a 2D lattice.\n",
+    "        \"\"\"\n",
+    "        i, j = site\n",
+    "        neighbors = []\n",
+    "        if i > 0: neighbors.append((i-1, j))  # Left\n",
+    "        if i < self.Lx-1: neighbors.append((i+1, j))  # Right\n",
+    "        if j > 0: neighbors.append((i, j-1))  # Down\n",
+    "        if j < self.Ly-1: neighbors.append((i, j+1))  # Up\n",
+    "        return neighbors\n",
+    "    \n",
+    "    def apply_two_site_operator(self, site1, site2, op1, op2):\n",
+    "        \"\"\"\n",
+    "        Compute the tensor product of two operators acting on different sites.\n",
+    "        \"\"\"\n",
+    "        Op1 = self.get_operator(site1, op1)\n",
+    "        Op2 = self.get_operator(site2, op2)\n",
+    "        if Op1 is not None and Op2 is not None:\n",
+    "            return qutip.tensor(Op1, Op2)\n",
+    "        else:\n",
+    "            raise ValueError(\"Invalid site or operator type.\")\n",
+    "\n",
+    "# Example usage:\n",
+    "L = LatticeOperators(3, 3)\n",
+    "site = (1, 1)\n",
+    "print(\"Operators at site\", site, \":\", L.operators[site])\n",
+    "print(\"Neighbors of site (1,1):\", L.get_neighbors((1,1)))\n",
+    "print(\"Sz at (1,1) ⊗ Sx at (1,2):\\n\", L.apply_two_site_operator((1,1), (1,2), \"Sz\", \"Sx\"))\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "056c6164",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 19,
+   "id": "66a8b2f1",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/latex": [
+       "Quantum object: dims = [[2, 2], [2, 2]], shape = (4, 4), type = oper, isherm = True $ \\\\ \\left(\\begin{matrix}0.0 & 0.0 & 0.0 & 1.0\\\\0.0 & 0.0 & 1.0 & 0.0\\\\0.0 & 1.0 & 0.0 & 0.0\\\\1.0 & 0.0 & 0.0 & 0.0\\\\\\end{matrix}\\right)$"
+      ],
+      "text/plain": [
+       "Quantum object: dims = [[2, 2], [2, 2]], shape = (4, 4), type = oper, isherm = True\n",
+       "Qobj data =\n",
+       "[[0. 0. 0. 1.]\n",
+       " [0. 0. 1. 0.]\n",
+       " [0. 1. 0. 0.]\n",
+       " [1. 0. 0. 0.]]"
+      ]
+     },
+     "execution_count": 19,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "\n",
+    "L = LatticeOperators(6, 6)\n",
+    "site=(1,1)\n",
+    "L.operators[site]\n",
+    "L.get_neighbors(site)\n",
+    "L.apply_two_site_operator(site,L.get_neighbors(site)[3], \"Sx\", \"Sx\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "c4c7f613",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "98ecf2b1",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "\n"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3 (ipykernel)",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.12.3"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
